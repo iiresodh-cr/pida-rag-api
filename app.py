@@ -1,4 +1,5 @@
 # app.py
+
 import os
 import hashlib
 import io
@@ -30,16 +31,20 @@ app = Flask(__name__)
 try:
     PROJECT_ID = os.environ.get("PROJECT_ID")
     VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
-    LANGCHAIN_GOOGLE_GEMINI_API_KEY = os.environ.get("LANGCHAIN_GOOGLE_GEMINI_API_KEY")
     FIRESTORE_COLLECTION = "pdf_embeded_documents"
 
     firestore_client = firestore.Client()
     storage_client = storage.Client()
+    
+    # CORRECCIÓN 1: Se elimina el parámetro google_api_key.
+    # Ahora usará la cuenta de servicio automáticamente.
     embedding_service = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=LANGCHAIN_GOOGLE_GEMINI_API_KEY
+        model="models/text-embedding-004"
     )
-    llm = ChatVertexAI(model_name="gemini-1.5-flash-001")
+    
+    # CORRECCIÓN 2: Se usa el nombre del modelo correcto según tu regla de oro.
+    llm = ChatVertexAI(model_name="gemini-2.5-flash")
+
     print("--- Clientes de Google Cloud inicializados correctamente. ---")
 except Exception as e:
     print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
@@ -95,8 +100,10 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
             parsed = parser.parse(raw_output)
             return {"parsed": parsed, "raw_output": raw_output}
         except OutputParserException:
+            print(f"Error al parsear JSON del LLM: {raw_output}")
             return {"parsed": None, "raw_output": raw_output}
-    except Exception:
+    except Exception as e:
+        print(f"Error al invocar LLM: {e}")
         return {"parsed": None, "raw_output": None}
 
 def split_pdf_into_documents(doc_id: str, file_bytes: bytes, base_metadata: Dict[str, Any]) -> List[Document]:
@@ -148,7 +155,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     delete_embedded_documents_by_doc_id(doc_id)
     extracted_metadata_llm_result = extract_pdf_metadata_with_llm(file_bytes)
     parsed_llm_metadata = extracted_metadata_llm_result.get("parsed") or {}
-    raw_llm_output = extracted_metadata_llm_result.get("raw_output")
     indexing_timestamp = datetime.now(timezone.utc).isoformat()
     base_metadata = {**incoming_metadata, **parsed_llm_metadata, "indexing_timestamp": indexing_timestamp}
     documents = split_pdf_into_documents(doc_id, file_bytes, base_metadata)
@@ -159,13 +165,17 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     vector_store.add_documents(documents=documents, ids=chunk_ids)
     return {
         "status": "ok",
-        "data": {"doc_id": doc_id, "chunks_created": len(documents), "filename": filename, "metadata": parsed_llm_metadata, "raw_llm_output": raw_llm_output},
+        "data": {"doc_id": doc_id, "chunks_created": len(documents), "filename": filename, "metadata": parsed_llm_metadata},
         "code": 200
     }
 
 # ==============================================================================
 # ENDPOINTS DE LA API
 # ==============================================================================
+
+@app.route("/")
+def index():
+    return jsonify(status="ok", message="PIDA RAG API is running."), 200
 
 @app.route("/api/rag/process-pdf-from-bucket", methods=["POST"])
 def process_pdf_from_bucket_endpoint():
@@ -184,8 +194,9 @@ def process_pdf_from_bucket_endpoint():
             return jsonify(status="error", reason=f"File '{file_id}' not found in bucket '{bucket_name}'"), 404
         file_bytes = blob.download_as_bytes()
         result = _process_and_embed_pdf_content(file_bytes, file_id, additional_metadata)
-        return jsonify(result.get("data") if result.get("status") == "ok" else result), result.get("code", 500)
+        return jsonify(result.get("data") if result.get("status") == "ok" else result.get("reason")), result.get("code", 500)
     except Exception as e:
+        print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
 @app.route("/api/rag/query", methods=["POST"])
@@ -203,9 +214,38 @@ def query_endpoint():
         formatted_results = format_search_results(results)
         return jsonify(status="ok", results=formatted_results), 200
     except Exception as e:
+        print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
-# (Puedes añadir los otros endpoints como /embed-pdf y /list-bucket-files si los necesitas)
+@app.route("/api/rag/embed-pdf", methods=["POST"])
+def embed_pdf_endpoint():
+    try:
+        if "file" not in request.files:
+            return jsonify(status="error", reason="Missing file"), 400
+        file = request.files["file"]
+        file_bytes = file.read()
+        incoming_metadata = request.form.to_dict()
+        result = _process_and_embed_pdf_content(file_bytes, file.filename, incoming_metadata)
+        return jsonify(result.get("data") if result.get("status") == "ok" else result), result.get("code", 500)
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
+        
+@app.route("/api/rag/list-bucket-files", methods=["GET"])
+def list_bucket_files_endpoint():
+    try:
+        bucket_name = request.args.get("bucket_name")
+        if not bucket_name:
+            return jsonify(status="error", reason="Missing 'bucket_name' query parameter"), 400
+        if not storage_client:
+            return jsonify(status="error", reason="Could not initialize Google Cloud Storage client"), 500
+        bucket = storage_client.get_bucket(bucket_name)
+        blobs = bucket.list_blobs()
+        file_ids = [blob.name for blob in blobs if not blob.name.endswith('/')]
+        return jsonify(status="ok", bucket=bucket_name, file_ids=file_ids, count=len(file_ids)), 200
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
