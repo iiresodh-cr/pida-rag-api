@@ -1,5 +1,3 @@
-# app.py
-
 import os
 from flask import Flask, jsonify
 from rag_blueprint import firebase_rag_bp # Importamos la lógica desde el otro archivo
@@ -8,7 +6,6 @@ app = Flask(__name__)
 
 # Registramos el blueprint. Todas las rutas definidas en él
 # ahora estarán disponibles bajo el prefijo /api/rag
-# Ejemplo: /api/rag/query, /api/rag/embed-pdf, etc.
 app.register_blueprint(firebase_rag_bp, url_prefix='/api/rag')
 
 @app.route("/")
