@@ -1,0 +1,15 @@
+# cloudbuild.yaml
+steps:
+- name: 'gcr.io/cloud-builders/gcloud'
+  args:
+  - 'run'
+  - 'deploy'
+  - 'pida-rag-api' # El nombre exacto de servicio de Cloud Run
+  - '--source=.'
+  - '--region=us-central1'
+  - '--allow-unauthenticated' # Permite que la API sea pública
+  - '--service-account=pida-indexer-sa@pida-470320.iam.gserviceaccount.com' # La cuenta de servicio de API
+  # Referencia a las variables de entorno que son secretos
+  - '--update-secrets=LANGCHAIN_GOOGLE_GEMINI_API_KEY=gemini-api-key:latest'
+  # Referencia a las variables de entorno normales
+  - '--update-env-vars=PROJECT_ID=pida-470320,VERTEX_AI_LOCATION=us-central1'
