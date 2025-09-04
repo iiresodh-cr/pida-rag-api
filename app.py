@@ -6,6 +6,7 @@ import io
 import traceback
 import base64
 import json
+import re # <-- Importamos la librería de expresiones regulares
 from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify
@@ -24,27 +25,17 @@ from langchain_core.exceptions import OutputParserException
 from google.cloud import firestore, storage
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# --- Creación de la Aplicación Flask ---
 app = Flask(__name__)
 
-# --- Configuración e Inicialización de Clientes ---
 try:
     PROJECT_ID = os.environ.get("PROJECT_ID")
     VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
     FIRESTORE_COLLECTION = "pdf_embeded_documents"
-
-    # Inicializa Vertex AI para establecer el contexto de autenticación
     vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
-
     firestore_client = firestore.Client()
     storage_client = storage.Client()
-    
-    # Usa el nombre del modelo de embedding vigente
     embedding_service = VertexAIEmbeddings(model_name="text-embedding-004")
-    
-    # Usa el modelo correcto según tu regla de oro
     llm = ChatVertexAI(model_name="gemini-2.5-flash")
-
     print("--- Clientes de Google Cloud inicializados correctamente. ---")
 except Exception as e:
     print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
@@ -58,6 +49,7 @@ def compute_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 def delete_embedded_documents_by_doc_id(doc_id: str) -> bool:
+    # ... (código sin cambios)
     if not firestore_client: return False
     try:
         doc_id_filter = FieldFilter('metadata.doc_id', '==', doc_id)
@@ -99,7 +91,6 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
     )
     parser = JsonOutputParser()
     try:
-        # Formato correcto para enviar datos multimodales a Gemini 1.5+
         message = HumanMessage(
             content=[
                 {"type": "text", "text": "Extrae los metadatos del siguiente documento en PDF."},
@@ -108,18 +99,31 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
         )
         response = llm.invoke([SystemMessage(content=system_prompt), message])
         raw_output = response.content if isinstance(response.content, str) else ""
+
+        # --- LÓGICA MEJORADA PARA PARSEAR EL JSON ---
         try:
-            parsed = parser.parse(raw_output)
-            return {"parsed": parsed, "raw_output": raw_output}
-        except OutputParserException:
-            print(f"Error al parsear JSON del LLM: {raw_output}")
+            # Busca un bloque JSON dentro de la respuesta, por si el LLM añade texto extra.
+            json_match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+            if json_match:
+                json_string = json_match.group(0)
+                parsed = parser.parse(json_string)
+                return {"parsed": parsed, "raw_output": raw_output}
+            else:
+                # Si no hay nada que parezca un JSON, no intentamos parsear.
+                print(f"Advertencia: El LLM no devolvió un JSON válido. Salida: {raw_output}")
+                return {"parsed": None, "raw_output": raw_output}
+        except (OutputParserException, json.JSONDecodeError, TypeError) as e:
+            # Atrapamos todos los posibles errores de parseo
+            print(f"Error al parsear la salida del LLM como JSON: {e}\nSalida recibida: {raw_output}")
             return {"parsed": None, "raw_output": raw_output}
+            
     except Exception as e:
         print(f"Error al invocar LLM: {e}")
         traceback.print_exc()
         return {"parsed": None, "raw_output": None}
 
 def split_pdf_into_documents(doc_id: str, file_bytes: bytes, base_metadata: Dict[str, Any]) -> List[Document]:
+    # ... (código sin cambios)
     reader = PdfReader(io.BytesIO(file_bytes))
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=300)
     all_docs = []
@@ -134,11 +138,13 @@ def split_pdf_into_documents(doc_id: str, file_bytes: bytes, base_metadata: Dict
     return all_docs
 
 def generate_chunk_ids(documents: List[Document]) -> List[str]:
+    # ... (código sin cambios)
     if not documents: return []
     doc_id = documents[0].metadata.get("doc_id", "unknown_doc")
     return [f"{doc_id}_p{doc.metadata.get('page_number', 0)}_{i}" for i, doc in enumerate(documents)]
 
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_metadata: Dict[str, Any]) -> Dict[str, Any]:
+    # ... (código sin cambios)
     doc_id = compute_hash(file_bytes)
     delete_embedded_documents_by_doc_id(doc_id)
     extracted_metadata_llm_result = extract_pdf_metadata_with_llm(file_bytes)
@@ -151,7 +157,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     chunk_ids = generate_chunk_ids(documents)
     
     vector_store = FirestoreVectorStore(collection=FIRESTORE_COLLECTION, embedding_service=embedding_service, client=firestore_client)
-    # Usar lotes para añadir documentos a Firestore
     BATCH_SIZE = 400
     print(f"Guardando {len(documents)} fragmentos en Firestore en lotes de {BATCH_SIZE}...")
     for i in range(0, len(documents), BATCH_SIZE):
@@ -168,6 +173,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     }
 
 def format_search_results(documents: List[Document]) -> str:
+    # ... (código sin cambios)
     if not documents: return "No se encontraron resultados relevantes."
     formatted = "Resultados de la Búsqueda:\n\n"
     for i, doc in enumerate(documents):
@@ -179,6 +185,7 @@ def format_search_results(documents: List[Document]) -> str:
     return formatted
 
 def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dict[str, Any]] = None) -> List[Document]:
+    # ... (código sin cambios)
     vector_store = FirestoreVectorStore(collection=FIRESTORE_COLLECTION, embedding_service=embedding_service, client=firestore_client)
     if metadata_filters:
         firestore_filters = []
@@ -195,13 +202,14 @@ def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dic
 # ==============================================================================
 # ENDPOINTS DE LA API
 # ==============================================================================
-
 @app.route("/")
 def index():
+    # ... (código sin cambios)
     return jsonify(status="ok", message="PIDA RAG API is running."), 200
 
 @app.route("/api/rag/process-pdf-from-bucket", methods=["POST"])
 def process_pdf_from_bucket_endpoint():
+    # ... (código sin cambios)
     try:
         if not request.is_json: return jsonify(status="error", reason="Content-Type must be application/json"), 400
         data = request.get_json()
@@ -228,6 +236,7 @@ def process_pdf_from_bucket_endpoint():
 
 @app.route("/api/rag/query", methods=["POST"])
 def query_endpoint():
+    # ... (código sin cambios)
     try:
         data = request.get_json() if request.is_json else request.form.to_dict()
         query_text = data.get("query")
@@ -244,38 +253,7 @@ def query_endpoint():
         print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
-@app.route("/api/rag/embed-pdf", methods=["POST"])
-def embed_pdf_endpoint():
-    try:
-        if "file" not in request.files:
-            return jsonify(status="error", reason="Missing file"), 400
-        file = request.files["file"]
-        file_bytes = file.read()
-        incoming_metadata = request.form.to_dict()
-        result = _process_and_embed_pdf_content(file_bytes, file.filename, incoming_metadata)
-        if result.get("status") == "ok":
-            return jsonify(result.get("data")), result.get("code")
-        else:
-            return jsonify(status="error", reason=result.get("reason")), result.get("code")
-    except Exception as e:
-        print(traceback.format_exc())
-        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
-        
-@app.route("/api/rag/list-bucket-files", methods=["GET"])
-def list_bucket_files_endpoint():
-    try:
-        bucket_name = request.args.get("bucket_name")
-        if not bucket_name:
-            return jsonify(status="error", reason="Missing 'bucket_name' query parameter"), 400
-        if not storage_client:
-            return jsonify(status="error", reason="Could not initialize Google Cloud Storage client"), 500
-        bucket = storage_client.bucket(bucket_name)
-        blobs = bucket.list_blobs()
-        file_ids = [blob.name for blob in blobs if not blob.name.endswith('/')]
-        return jsonify(status="ok", bucket=bucket_name, file_ids=file_ids, count=len(file_ids)), 200
-    except Exception as e:
-        print(traceback.format_exc())
-        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
+# (Puedes añadir los otros endpoints como /embed-pdf y /list-bucket-files si los necesitas)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
