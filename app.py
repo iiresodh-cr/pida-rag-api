@@ -13,11 +13,11 @@ from pypdf import PdfReader
 from typing import List, Dict, Any, Optional
 
 # LangChain y Google
+import vertexai
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_google_vertexai import ChatVertexAI
+from langchain_google_vertexai import VertexAIEmbeddings, ChatVertexAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
@@ -33,21 +33,28 @@ try:
     VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
     FIRESTORE_COLLECTION = "pdf_embeded_documents"
 
+    # --- CAMBIO CLAVE: Inicializar Vertex AI primero ---
+    # Esto establece el contexto de autenticación (la cuenta de servicio)
+    # para todas las operaciones subsiguientes de LangChain con Vertex AI.
+    vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
+    # ----------------------------------------------------
+
     firestore_client = firestore.Client()
     storage_client = storage.Client()
     
-    # CORRECCIÓN 1: Se elimina el parámetro google_api_key.
-    # Ahora usará la cuenta de servicio automáticamente.
-    embedding_service = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004"
+    # Se usa VertexAIEmbeddings para asegurar que utilice la autenticación del proyecto
+    # y no busque una API Key. El modelo es el equivalente al que usábamos.
+    embedding_service = VertexAIEmbeddings(
+        model_name="textembedding-gecko@003"
     )
     
-    # CORRECCIÓN 2: Se usa el nombre del modelo correcto según tu regla de oro.
+    # Se usa el nombre del modelo correcto según tu regla de oro.
     llm = ChatVertexAI(model_name="gemini-2.5-flash")
 
-    print("--- Clientes de Google Cloud inicializados correctamente. ---")
+    print("--- Clientes de Google Cloud inicializados correctamente (con contexto VertexAI explícito). ---")
 except Exception as e:
     print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
+    traceback.print_exc()
 
 # ==============================================================================
 # FUNCIONES AUXILIARES
@@ -90,9 +97,9 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
     try:
         response = llm.invoke([
             SystemMessage(content=system_prompt),
-            HumanMessage([
-                {"type": "media", "data": pdf_base64, "mime_type": "application/pdf"},
-                "Extrae los metadatos del documento."
+            HumanMessage(content=[
+                {"type": "image_url", "image_url": f"data:application/pdf;base64,{pdf_base64}"},
+                {"type": "text", "text": "Extrae los metadatos del documento."}
             ])
         ])
         raw_output = response.content if isinstance(response.content, str) else ""
@@ -194,7 +201,12 @@ def process_pdf_from_bucket_endpoint():
             return jsonify(status="error", reason=f"File '{file_id}' not found in bucket '{bucket_name}'"), 404
         file_bytes = blob.download_as_bytes()
         result = _process_and_embed_pdf_content(file_bytes, file_id, additional_metadata)
-        return jsonify(result.get("data") if result.get("status") == "ok" else result.get("reason")), result.get("code", 500)
+        
+        if result.get("status") == "ok":
+            return jsonify(result.get("data")), result.get("code")
+        else:
+            return jsonify(status="error", reason=result.get("reason")), result.get("code")
+
     except Exception as e:
         print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
@@ -226,7 +238,11 @@ def embed_pdf_endpoint():
         file_bytes = file.read()
         incoming_metadata = request.form.to_dict()
         result = _process_and_embed_pdf_content(file_bytes, file.filename, incoming_metadata)
-        return jsonify(result.get("data") if result.get("status") == "ok" else result), result.get("code", 500)
+
+        if result.get("status") == "ok":
+            return jsonify(result.get("data")), result.get("code")
+        else:
+            return jsonify(status="error", reason=result.get("reason")), result.get("code")
     except Exception as e:
         print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
