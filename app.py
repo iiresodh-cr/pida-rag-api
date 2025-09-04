@@ -13,6 +13,7 @@ from flask import Flask, request, jsonify
 from pypdf import PdfReader
 from typing import List, Dict, Any, Optional
 
+# LangChain y Google
 import vertexai
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -63,62 +64,207 @@ def get_clients():
 def compute_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
+def delete_embedded_documents_by_doc_id(doc_id: str) -> bool:
+    firestore_client = get_clients().get('firestore')
+    if not firestore_client: return False
+    try:
+        FIRESTORE_COLLECTION = "pdf_embeded_documents"
+        doc_id_filter = FieldFilter('metadata.doc_id', '==', doc_id)
+        query = firestore_client.collection(FIRESTORE_COLLECTION).where(filter=doc_id_filter)
+        docs_to_delete = list(query.stream())
+        if not docs_to_delete:
+            print(f"No se encontraron documentos existentes con doc_id: {doc_id}")
+            return True
+        batch = firestore_client.batch()
+        deleted_count = 0
+        for doc in docs_to_delete:
+            batch.delete(doc.reference)
+            deleted_count += 1
+            if deleted_count % 400 == 0:
+                batch.commit()
+                batch = firestore_client.batch()
+        if deleted_count > 0 and deleted_count % 400 != 0:
+            batch.commit()
+        print(f"Eliminados {len(docs_to_delete)} documentos con doc_id: {doc_id}")
+        return True
+    except Exception as e:
+        print(f"Error al eliminar documentos: {e}")
+        return False
+
+def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
+    llm = get_clients().get('llm')
+    if not llm: return {"parsed": None, "raw_output": "LLM client not initialized"}
+    
+    pdf_base64 = base64.b64encode(file_bytes).decode("utf-8")
+    system_prompt = (
+        "Eres un asistente experto en análisis de documentos sobre derechos humanos. "
+        "Tu tarea es analizar el contenido de un documento en PDF y extraer la siguiente información en formato JSON:\n\n"
+        "- title: Título completo del documento\n"
+        "- authors: Lista de autores o instituciones responsables\n"
+        "- publication_date: Fecha de publicación (formato YYYY-MM-DD)\n"
+        "- topic: Tema central del documento\n"
+        "- document_type: Tipo de documento. Elige de: [\"informe\", \"resolución\", \"sentencia\", \"ley\", \"otro\"]\n"
+        "- issuing_organization: Nombre de la organización que publica\n"
+        "- region_or_country: Región o país de enfoque\n"
+        "- categories: Lista de categorías relevantes\n\n"
+        "Si un dato no está, usa null. Responde solo con el JSON."
+    )
+    parser = JsonOutputParser()
+    try:
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": "Extrae los metadatos del siguiente documento en PDF."},
+                {"type": "image_url", "image_url": f"data:application/pdf;base64,{pdf_base64}"}
+            ]
+        )
+        response = llm.invoke([SystemMessage(content=system_prompt), message])
+        raw_output = response.content if isinstance(response.content, str) else ""
+        try:
+            json_match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+            if json_match:
+                json_string = json_match.group(0)
+                parsed = parser.parse(json_string)
+                return {"parsed": parsed, "raw_output": raw_output}
+            else:
+                print(f"Advertencia: El LLM no devolvió un JSON válido. Salida: {raw_output}")
+                return {"parsed": None, "raw_output": raw_output}
+        except (OutputParserException, json.JSONDecodeError, TypeError) as e:
+            print(f"Error al parsear la salida del LLM como JSON: {e}\nSalida recibida: {raw_output}")
+            return {"parsed": None, "raw_output": raw_output}
+    except Exception as e:
+        print(f"Error al invocar LLM: {e}")
+        traceback.print_exc()
+        return {"parsed": None, "raw_output": None}
+
+def split_pdf_into_documents(doc_id: str, file_bytes: bytes, base_metadata: Dict[str, Any]) -> List[Document]:
+    reader = PdfReader(io.BytesIO(file_bytes))
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=300)
+    all_docs = []
+    for page_num, page in enumerate(reader.pages):
+        text = page.extract_text()
+        if not text: continue
+        chunks = text_splitter.split_text(text)
+        for chunk in chunks:
+            chunk_metadata = base_metadata.copy()
+            chunk_metadata.update({"page_number": page_num + 1})
+            all_docs.append(Document(page_content=chunk, metadata=chunk_metadata))
+    return all_docs
+
+def generate_chunk_ids(documents: List[Document]) -> List[str]:
+    if not documents: return []
+    doc_id = documents[0].metadata.get("doc_id", "unknown_doc")
+    return [f"{doc_id}_p{doc.metadata.get('page_number', 0)}_{i}" for i, doc in enumerate(documents)]
+
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     clients = get_clients()
     if not clients:
         raise Exception("Los clientes de GCP no se pudieron inicializar.")
     
-    # ... (Aquí va toda tu lógica de procesamiento, como la definimos antes)
-
-    # Ejemplo simplificado de lo que debería ir aquí
-    print(f"Procesando y generando embeddings para {filename}...")
-    # 1. Calcular hash
-    # 2. Extraer texto
-    # 3. Generar embeddings
-    # 4. Guardar en Firestore
-    print(f"Finalizado el procesamiento para {filename}.")
+    FIRESTORE_COLLECTION = "pdf_embeded_documents"
+    doc_id = compute_hash(file_bytes)
+    delete_embedded_documents_by_doc_id(doc_id)
     
-    # Devuelve un diccionario con los resultados
+    print("Extrayendo metadatos con LLM...")
+    extracted_metadata_llm_result = extract_pdf_metadata_with_llm(file_bytes)
+    parsed_llm_metadata = extracted_metadata_llm_result.get("parsed") or {}
+    
+    indexing_timestamp = datetime.now(timezone.utc).isoformat()
+    base_metadata = {**parsed_llm_metadata, "doc_id": doc_id, "indexing_timestamp": indexing_timestamp}
+    
+    print("Dividiendo el documento en fragmentos...")
+    documents = split_pdf_into_documents(doc_id, file_bytes, base_metadata)
+    if not documents:
+        return {"status": "error", "reason": "No se pudo extraer texto del PDF.", "code": 400}
+        
+    chunk_ids = generate_chunk_ids(documents)
+    
+    vector_store = FirestoreVectorStore(
+        collection=FIRESTORE_COLLECTION,
+        embedding_service=clients.get('embedding'),
+        client=clients.get('firestore')
+    )
+
+    BATCH_SIZE = 400
+    print(f"Guardando {len(documents)} fragmentos en Firestore en lotes de {BATCH_SIZE}...")
+    for i in range(0, len(documents), BATCH_SIZE):
+        batch_docs = documents[i:i + BATCH_SIZE]
+        batch_ids = chunk_ids[i:i + BATCH_SIZE]
+        vector_store.add_documents(documents=batch_docs, ids=batch_ids)
+        print(f"  -> Lote de {len(batch_docs)} documentos guardado en Firestore.")
+    print("✅ Todos los lotes guardados en Firestore.")
+        
     return {
         "status": "ok",
-        "data": {"filename": filename, "chunks_created": 100}, # Ejemplo
+        "data": {"doc_id": doc_id, "chunks_created": len(documents), "filename": filename, "metadata": parsed_llm_metadata},
         "code": 200
     }
 
+def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dict[str, Any]] = None) -> List[Document]:
+    clients = get_clients()
+    if not clients: raise Exception("Los clientes de GCP no se pudieron inicializar.")
+    vector_store = FirestoreVectorStore(
+        collection="pdf_embeded_documents",
+        embedding_service=clients.get('embedding'),
+        client=clients.get('firestore')
+    )
+    if metadata_filters:
+        firestore_filters = []
+        for key, value in metadata_filters.items():
+            if isinstance(value, dict) and ('start' in value or 'end' in value):
+                if 'start' in value: firestore_filters.append(FieldFilter(f'metadata.{key}', '>=', value['start']))
+                if 'end' in value: firestore_filters.append(FieldFilter(f'metadata.{key}', '<=', value['end']))
+            else:
+                firestore_filters.append(FieldFilter(f'metadata.{key}', '==', value))
+        return vector_store.similarity_search(query, k=k, filters=firestore_filters)
+    else:
+        return vector_store.similarity_search(query, k=k)
+
+def format_search_results(documents: List[Document]) -> str:
+    if not documents: return "No se encontraron resultados relevantes."
+    formatted = "Resultados de la Búsqueda:\n\n"
+    for i, doc in enumerate(documents):
+        formatted += f"--- Resultado {i+1} ---\n"
+        formatted += f"ID del Documento: {doc.metadata.get('doc_id')}\nPágina: {doc.metadata.get('page_number')}\n"
+        formatted += f"Tipo: {doc.metadata.get('document_type', 'N/A')}\n"
+        formatted += f"Tema: {doc.metadata.get('topic', 'N/A')}\n"
+        formatted += f"Contenido:\n\"\"\"\n{doc.page_content}\n\"\"\"\n\n"
+    return formatted
+
 # ==============================================================================
-# ENDPOINT PRINCIPAL AUTOMATIZADO
+# ENDPOINTS
 # ==============================================================================
 
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
     """
-    Este endpoint único recibe y procesa los eventos de Cloud Storage.
+    Endpoint principal que recibe eventos de Cloud Storage y procesa el archivo.
     """
     try:
+        event = request.get_json(silent=True)
+        if not event:
+            print("Petición recibida sin cuerpo JSON. Ignorando.")
+            # Devuelve un 204 para que el trigger no lo reintente.
+            return "Petición ignorada", 204
+
+        # El activador de Cloud Run envuelve el evento de GCS.
+        # Los datos del archivo están en el cuerpo del JSON.
+        bucket_name = event.get("bucket")
+        file_id = event.get("name")
+        
+        if not bucket_name or not file_id:
+            print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
+            return "Evento no válido", 204
+
+        print(f"Archivo detectado: {file_id} en bucket: {bucket_name}")
+
         clients = get_clients()
         storage_client = clients.get('storage')
-
         if not storage_client:
             print("Error: Storage client no inicializado.")
             return "Error interno del servidor", 500
 
-        # El cuerpo de la petición es un evento CloudEvent
-        event = request.get_json()
-        
-        # Verificamos que sea un evento de creación de archivo
-        event_type = event.get("type")
-        if event_type != "google.cloud.storage.object.v1.finalized":
-            print(f"Evento ignorado: {event_type}")
-            return "Evento ignorado", 204
-
-        bucket_name = event["bucket"]
-        file_id = event["name"]
-        
-        print(f"Archivo detectado: {file_id} en bucket: {bucket_name}")
-
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
-        
         if not blob.exists():
             print(f"Archivo {file_id} no encontrado en el bucket.")
             return f"Archivo no encontrado", 404
@@ -139,6 +285,26 @@ def handle_gcs_event():
         print(f"Error inesperado procesando el evento: {traceback.format_exc()}")
         return f"Error inesperado: {str(e)}", 500
 
+@app.route("/query", methods=["POST"])
+def query_endpoint():
+    """
+    Endpoint para hacer consultas a la base de datos de documentos.
+    """
+    try:
+        data = request.get_json() if request.is_json else request.form.to_dict()
+        query_text = data.get("query")
+        if not query_text: return jsonify(status="error", reason="Falta 'query'"), 400
+        
+        k_results = int(data.get("k", 3))
+        metadata_filters = data.get("metadata_filters")
+        
+        results = perform_similarity_search(query=query_text, k=k_results, metadata_filters=metadata_filters)
+        formatted_results = format_search_results(results)
+        
+        return jsonify(status="ok", results=formatted_results), 200
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
+
 if __name__ == "__main__":
-    # Este bloque solo se usa para desarrollo local
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
