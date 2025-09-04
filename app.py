@@ -37,7 +37,7 @@ def get_clients():
     Esta función es segura para usar en entornos de producción con Gunicorn.
     """
     global clients
-    if 'firestore' not in clients:
+    if 'firestore' not in clients: # Solo inicializa si un cliente clave falta
         print("--- Inicializando clientes de Google Cloud por primera vez... ---")
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -54,7 +54,7 @@ def get_clients():
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
             traceback.print_exc()
-            clients = {}
+            clients = {} # Resetea en caso de fallo para reintentar
     return clients
 
 # ==============================================================================
@@ -155,7 +155,7 @@ def generate_chunk_ids(documents: List[Document]) -> List[str]:
     doc_id = documents[0].metadata.get("doc_id", "unknown_doc")
     return [f"{doc_id}_p{doc.metadata.get('page_number', 0)}_{i}" for i, doc in enumerate(documents)]
 
-def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_metadata: Dict[str, Any]) -> Dict[str, Any]:
     clients = get_clients()
     if not clients:
         raise Exception("Los clientes de GCP no se pudieron inicializar.")
@@ -169,7 +169,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
     parsed_llm_metadata = extracted_metadata_llm_result.get("parsed") or {}
     
     indexing_timestamp = datetime.now(timezone.utc).isoformat()
-    base_metadata = {**parsed_llm_metadata, "doc_id": doc_id, "indexing_timestamp": indexing_timestamp}
+    base_metadata = {**incoming_metadata, **parsed_llm_metadata, "doc_id": doc_id, "indexing_timestamp": indexing_timestamp}
     
     print("Dividiendo el documento en fragmentos...")
     documents = split_pdf_into_documents(doc_id, file_bytes, base_metadata)
@@ -234,56 +234,58 @@ def format_search_results(documents: List[Document]) -> str:
 # ENDPOINTS
 # ==============================================================================
 
-@app.route("/", methods=["POST"])
-def handle_gcs_event():
+@app.route("/", methods=["GET", "POST"])
+def main_endpoint():
     """
-    Endpoint principal que recibe eventos de Cloud Storage y procesa el archivo.
+    Endpoint principal. Responde a GET para health checks y a POST para eventos.
     """
-    try:
-        event = request.get_json(silent=True)
-        if not event:
-            print("Petición recibida sin cuerpo JSON. Ignorando.")
-            # Devuelve un 204 para que el trigger no lo reintente.
-            return "Petición ignorada", 204
+    if request.method == 'GET':
+        return jsonify(status="ok", message="PIDA RAG API is running."), 200
+    
+    if request.method == 'POST':
+        try:
+            # Lógica para manejar el evento de GCS
+            event = request.get_json(silent=True)
+            if not event:
+                print("Petición POST vacía o sin JSON. Ignorando.")
+                return "Petición ignorada", 204
 
-        # El activador de Cloud Run envuelve el evento de GCS.
-        # Los datos del archivo están en el cuerpo del JSON.
-        bucket_name = event.get("bucket")
-        file_id = event.get("name")
-        
-        if not bucket_name or not file_id:
-            print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
-            return "Evento no válido", 204
-
-        print(f"Archivo detectado: {file_id} en bucket: {bucket_name}")
-
-        clients = get_clients()
-        storage_client = clients.get('storage')
-        if not storage_client:
-            print("Error: Storage client no inicializado.")
-            return "Error interno del servidor", 500
-
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(file_id)
-        if not blob.exists():
-            print(f"Archivo {file_id} no encontrado en el bucket.")
-            return f"Archivo no encontrado", 404
+            bucket_name = event.get("bucket")
+            file_id = event.get("name")
             
-        file_bytes = blob.download_as_bytes()
-        
-        result = _process_and_embed_pdf_content(file_bytes, file_id)
-        
-        if result.get("status") == "ok":
-            print(f"Éxito al procesar {file_id}.")
-            return "Procesado con éxito", 200
-        else:
-            reason = result.get("reason", "Razón desconocida")
-            print(f"Fallo al procesar {file_id}: {reason}")
-            return f"Fallo en el procesamiento: {reason}", 500
+            if not bucket_name or not file_id:
+                print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
+                return "Evento no válido", 204
 
-    except Exception as e:
-        print(f"Error inesperado procesando el evento: {traceback.format_exc()}")
-        return f"Error inesperado: {str(e)}", 500
+            print(f"Archivo detectado: {file_id} en bucket: {bucket_name}")
+
+            clients = get_clients()
+            storage_client = clients.get('storage')
+            if not storage_client:
+                print("Error: Storage client no inicializado.")
+                return "Error interno del servidor", 500
+
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(file_id)
+            if not blob.exists():
+                print(f"Archivo {file_id} no encontrado en el bucket.")
+                return f"Archivo no encontrado", 204 # Devolvemos 2xx para no reintentar
+                
+            file_bytes = blob.download_as_bytes()
+            
+            result = _process_and_embed_pdf_content(file_bytes, file_id, {})
+            
+            if result.get("status") == "ok":
+                print(f"Éxito al procesar {file_id}.")
+                return "Procesado con éxito", 200
+            else:
+                reason = result.get("reason", "Razón desconocida")
+                print(f"Fallo al procesar {file_id}: {reason}")
+                return f"Fallo en el procesamiento: {reason}", 500
+
+        except Exception as e:
+            print(f"Error inesperado procesando el evento: {traceback.format_exc()}")
+            return f"Error inesperado: {str(e)}", 500
 
 @app.route("/query", methods=["POST"])
 def query_endpoint():
