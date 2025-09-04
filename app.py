@@ -39,10 +39,10 @@ try:
     firestore_client = firestore.Client()
     storage_client = storage.Client()
     
-    # Usa VertexAIEmbeddings para asegurar la autenticación vía Cuenta de Servicio
-    embedding_service = VertexAIEmbeddings(model_name="textembedding-gecko@003")
+    # CORRECCIÓN FINAL: Usar el nombre del modelo de embedding vigente.
+    embedding_service = VertexAIEmbeddings(model_name="text-embedding-004")
     
-    # Usa el modelo correcto según tu regla de oro
+    # Usa el modelo correcto según tu regla de oro.
     llm = ChatVertexAI(model_name="gemini-2.5-flash")
 
     print("--- Clientes de Google Cloud inicializados correctamente. ---")
@@ -88,7 +88,6 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
     )
     parser = JsonOutputParser()
     try:
-        # Para Gemini 1.5, el formato de datos multimedia es diferente
         message = HumanMessage(
             content=[
                 {"type": "text", "text": "Extrae los metadatos del siguiente documento en PDF."},
@@ -146,6 +145,33 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
         "code": 200
     }
 
+def format_search_results(documents: List[Document]) -> str:
+    # (Esta función no fue provista en el código original, la añado para completitud)
+    if not documents: return "No se encontraron resultados relevantes."
+    formatted = "Resultados de la Búsqueda:\n\n"
+    for i, doc in enumerate(documents):
+        formatted += f"--- Resultado {i+1} ---\n"
+        formatted += f"URL: /{doc.metadata.get('doc_id')}?page={doc.metadata.get('page_number')}\n"
+        formatted += f"Tipo de Documento: {doc.metadata.get('document_type', 'N/A')}\n"
+        formatted += f"Tema: {doc.metadata.get('topic', 'N/A')}\n"
+        formatted += f"Contenido:\n\"\"\"\n{doc.page_content}\n\"\"\"\n\n"
+    return formatted
+
+def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dict[str, Any]] = None) -> List[Document]:
+    # (Esta función no fue provista en el código original, la añado para completitud)
+    vector_store = FirestoreVectorStore(collection=FIRESTORE_COLLECTION, embedding_service=embedding_service, client=firestore_client)
+    if metadata_filters:
+        firestore_filters = []
+        for key, value in metadata_filters.items():
+            if isinstance(value, dict) and ('start' in value or 'end' in value):
+                if 'start' in value: firestore_filters.append(FieldFilter(f'metadata.{key}', '>=', value['start']))
+                if 'end' in value: firestore_filters.append(FieldFilter(f'metadata.{key}', '<=', value['end']))
+            else:
+                firestore_filters.append(FieldFilter(f'metadata.{key}', '==', value))
+        return vector_store.similarity_search(query, k=k, filters=firestore_filters)
+    else:
+        return vector_store.similarity_search(query, k=k)
+
 # ==============================================================================
 # ENDPOINTS DE LA API
 # ==============================================================================
@@ -180,7 +206,25 @@ def process_pdf_from_bucket_endpoint():
         print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
-# (Aquí irían los otros endpoints como /query, pero nos enfocamos en el que falla)
+@app.route("/api/rag/query", methods=["POST"])
+def query_endpoint():
+    try:
+        data = request.get_json() if request.is_json else request.form.to_dict()
+        query_text = data.get("query")
+        k_results = int(data.get("k", 3))
+        metadata_filters = None
+        if "metadata_filters" in data:
+            if isinstance(data["metadata_filters"], str): metadata_filters = json.loads(data["metadata_filters"])
+            else: metadata_filters = data["metadata_filters"]
+        if not query_text: return jsonify(status="error", reason="Falta 'query'"), 400
+        results = perform_similarity_search(query=query_text, k=k_results, metadata_filters=metadata_filters)
+        formatted_results = format_search_results(results)
+        return jsonify(status="ok", results=formatted_results), 200
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
+
+# (Puedes añadir los otros endpoints como /embed-pdf y /list-bucket-files si los necesitas)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
