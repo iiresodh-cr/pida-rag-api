@@ -39,7 +39,7 @@ try:
     firestore_client = firestore.Client()
     storage_client = storage.Client()
     
-    # CORRECCIÓN FINAL: Usar el nombre del modelo de embedding vigente.
+    # Usa el nombre del modelo de embedding vigente.
     embedding_service = VertexAIEmbeddings(model_name="text-embedding-004")
     
     # Usa el modelo correcto según tu regla de oro.
@@ -63,8 +63,17 @@ def delete_embedded_documents_by_doc_id(doc_id: str) -> bool:
         doc_id_filter = FieldFilter('metadata.doc_id', '==', doc_id)
         query = firestore_client.collection(FIRESTORE_COLLECTION).where(filter=doc_id_filter)
         docs_to_delete = list(query.stream())
+        # Borrar en lotes para no exceder límites si hay muchos chunks
+        batch = firestore_client.batch()
+        deleted_count = 0
         for doc in docs_to_delete:
-            doc.reference.delete()
+            batch.delete(doc.reference)
+            deleted_count += 1
+            if deleted_count % 400 == 0: # Límite de Firestore es 500
+                batch.commit()
+                batch = firestore_client.batch()
+        if deleted_count % 400 != 0:
+            batch.commit() # Commit del último lote
         print(f"Eliminados {len(docs_to_delete)} documentos con doc_id: {doc_id}")
         return True
     except Exception as e:
@@ -75,7 +84,8 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
     pdf_base64 = base64.b64encode(file_bytes).decode("utf-8")
     system_prompt = (
         "Eres un asistente experto en análisis de documentos sobre derechos humanos. "
-        "Tu tarea es analizar el contenido de un documento en PDF y extraer la siguiente información en formato JSON:\n\n"
+        "Tu tarea es analizar el contenido de un documento en PDF (como informes, declaraciones, leyes o resoluciones) "
+        "y extraer la siguiente información en formato JSON:\n\n"
         "- title: Título completo del documento\n"
         "- authors: Lista de autores o instituciones responsables\n"
         "- publication_date: Fecha de publicación (formato YYYY-MM-DD)\n"
@@ -88,6 +98,7 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
     )
     parser = JsonOutputParser()
     try:
+        # CORRECCIÓN para el formato de Gemini 1.5+
         message = HumanMessage(
             content=[
                 {"type": "text", "text": "Extrae los metadatos del siguiente documento en PDF."},
@@ -137,8 +148,18 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     if not documents:
         return {"status": "error", "reason": "No se pudo extraer texto del PDF.", "code": 400}
     chunk_ids = generate_chunk_ids(documents)
+    
+    # CORRECCIÓN: Usar lotes para añadir documentos a Firestore
     vector_store = FirestoreVectorStore(collection=FIRESTORE_COLLECTION, embedding_service=embedding_service, client=firestore_client)
-    vector_store.add_documents(documents=documents, ids=chunk_ids)
+    BATCH_SIZE = 400 # Límite de Firestore es 500, usamos 400 por seguridad.
+    print(f"Guardando {len(documents)} fragmentos en Firestore en lotes de {BATCH_SIZE}...")
+    for i in range(0, len(documents), BATCH_SIZE):
+        batch_docs = documents[i:i + BATCH_SIZE]
+        batch_ids = chunk_ids[i:i + BATCH_SIZE]
+        vector_store.add_documents(documents=batch_docs, ids=batch_ids)
+        print(f"  -> Lote de {len(batch_docs)} documentos guardado.")
+    print("✅ Todos los lotes guardados en Firestore.")
+    
     return {
         "status": "ok",
         "data": {"doc_id": doc_id, "chunks_created": len(documents), "filename": filename, "metadata": parsed_llm_metadata},
@@ -146,7 +167,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     }
 
 def format_search_results(documents: List[Document]) -> str:
-    # (Esta función no fue provista en el código original, la añado para completitud)
     if not documents: return "No se encontraron resultados relevantes."
     formatted = "Resultados de la Búsqueda:\n\n"
     for i, doc in enumerate(documents):
@@ -158,7 +178,6 @@ def format_search_results(documents: List[Document]) -> str:
     return formatted
 
 def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dict[str, Any]] = None) -> List[Document]:
-    # (Esta función no fue provista en el código original, la añado para completitud)
     vector_store = FirestoreVectorStore(collection=FIRESTORE_COLLECTION, embedding_service=embedding_service, client=firestore_client)
     if metadata_filters:
         firestore_filters = []
@@ -201,7 +220,6 @@ def process_pdf_from_bucket_endpoint():
             return jsonify(result.get("data")), result.get("code")
         else:
             return jsonify(status="error", reason=result.get("reason")), result.get("code")
-
     except Exception as e:
         print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
@@ -224,7 +242,38 @@ def query_endpoint():
         print(traceback.format_exc())
         return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
-# (Puedes añadir los otros endpoints como /embed-pdf y /list-bucket-files si los necesitas)
+@app.route("/api/rag/embed-pdf", methods=["POST"])
+def embed_pdf_endpoint():
+    try:
+        if "file" not in request.files:
+            return jsonify(status="error", reason="Missing file"), 400
+        file = request.files["file"]
+        file_bytes = file.read()
+        incoming_metadata = request.form.to_dict()
+        result = _process_and_embed_pdf_content(file_bytes, file.filename, incoming_metadata)
+        if result.get("status") == "ok":
+            return jsonify(result.get("data")), result.get("code")
+        else:
+            return jsonify(status="error", reason=result.get("reason")), result.get("code")
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
+        
+@app.route("/api/rag/list-bucket-files", methods=["GET"])
+def list_bucket_files_endpoint():
+    try:
+        bucket_name = request.args.get("bucket_name")
+        if not bucket_name:
+            return jsonify(status="error", reason="Missing 'bucket_name' query parameter"), 400
+        if not storage_client:
+            return jsonify(status="error", reason="Could not initialize Google Cloud Storage client"), 500
+        bucket = storage_client.bucket(bucket_name)
+        blobs = bucket.list_blobs()
+        file_ids = [blob.name for blob in blobs if not blob.name.endswith('/')]
+        return jsonify(status="ok", bucket=bucket_name, file_ids=file_ids, count=len(file_ids)), 200
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
