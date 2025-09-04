@@ -1,11 +1,36 @@
 # cloudbuild.yaml
+# Este archivo ha sido modificado para separar el proceso en 3 pasos explícitos
+# y añadir el flag --no-cache para forzar una instalación limpia de las dependencias.
+
 steps:
+# Paso 1: Construir la imagen de Docker.
+# Se añade el flag '--no-cache' para asegurar que las dependencias de requirements.txt
+# se instalen desde cero en cada despliegue, eliminando la advertencia de obsolescencia.
+- name: 'gcr.io/cloud-builders/docker'
+  id: Build
+  args:
+  - 'build'
+  - '--no-cache'
+  - '-t'
+  - 'gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA'
+  - '.'
+
+# Paso 2: Subir la imagen construida al Container Registry de Google.
+- name: 'gcr.io/cloud-builders/docker'
+  id: Push
+  args:
+  - 'push'
+  - 'gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA'
+
+# Paso 3: Desplegar la imagen desde el Container Registry a Cloud Run.
+# Se reemplaza '--source=.' por '--image' para usar la imagen que acabamos de construir y subir.
 - name: 'gcr.io/cloud-builders/gcloud'
+  id: Deploy
   args:
   - 'run'
   - 'deploy'
-  - 'pida-rag-api' # El nombre exacto de servicio de Cloud Run
-  - '--source=.'
+  - 'pida-rag-api' # El nombre exacto de tu servicio de Cloud Run
+  - '--image=gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA' # Usa la imagen recién creada
   - '--region=us-central1'
   - '--allow-unauthenticated' # Permite que la API sea pública
   - '--service-account=pida-indexer-sa@pida-470320.iam.gserviceaccount.com' # La cuenta de servicio de API
@@ -13,3 +38,7 @@ steps:
   - '--update-secrets=LANGCHAIN_GOOGLE_GEMINI_API_KEY=gemini-api-key:latest'
   # Referencia a las variables de entorno normales
   - '--update-env-vars=PROJECT_ID=pida-470320,VERTEX_AI_LOCATION=us-central1'
+
+# Especifica la imagen que se ha subido como resultado de esta construcción.
+images:
+- 'gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA'
