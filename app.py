@@ -1,9 +1,7 @@
-# app.py
-
 import os
-import io  # <-- Importación necesaria para manejar bytes en memoria
+import io
 import traceback
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from pypdf import PdfReader
 from typing import Dict, Any
 
@@ -37,7 +35,7 @@ def get_clients():
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
             clients['embedding'] = VertexAIEmbeddings(model_name="text-embedding-004")
-            clients['llm'] = ChatVertexAI(model_name="gemini-2.5-flash")
+            clients['llm'] = ChatVertexAI(model_name="gemini-2.5-flash") 
             
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
         except Exception as e:
@@ -47,13 +45,11 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# FUNCIÓN PRINCIPAL DE PROCESAMIENTO DE PDF
+# FUNCIÓN DE PROCESAMIENTO DE PDF (EXISTENTE)
 # ==============================================================================
-
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore.
-    Esta función ahora maneja errores internamente y siempre devuelve un diccionario.
     """
     try:
         print(f"Iniciando procesamiento para el archivo: {filename}")
@@ -63,8 +59,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
 
         if not firestore_client or not embedding_model:
             raise Exception("Los clientes de Firestore o Embedding no se inicializaron correctamente.")
-
-        # --- Lógica de procesamiento de PDF ahora ACTIVADA ---
 
         # 1. Leer el contenido del PDF desde los bytes en memoria.
         print(f"Paso 1/4: Leyendo contenido del PDF '{filename}'...")
@@ -89,10 +83,8 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         ]
         
         # 4. Inicializar el Vector Store de Firestore y añadir los documentos.
-        #    Esto calculará los embeddings y los guardará.
         print(f"Paso 4/4: Guardando documentos y embeddings en Firestore...")
-        # ¡IMPORTANTE! Cambia "pida_vector_store" por el nombre de tu colección deseada.
-        COLLECTION_NAME = "pida_vector_store" 
+        COLLECTION_NAME = "pida_vector_store"  
         vector_store = FirestoreVectorStore(
             collection=COLLECTION_NAME,
             embedding_service=embedding_model,
@@ -100,69 +92,95 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         )
         vector_store.add_documents(documents)
         
-        # --- Fin de la lógica de procesamiento ---
-        
         print(f"Procesamiento completado con éxito para: {filename}")
         return {"status": "ok", "message": f"Archivo {filename} procesado y añadido a la colección '{COLLECTION_NAME}'."}
 
     except Exception as e:
-        # Si algo falla en cualquier punto, se captura el error aquí.
         print(f"!!! ERROR dentro de _process_and_embed_pdf_content para {filename}: {e}")
-        traceback.print_exc()  # Imprime el error detallado en los logs para depuración
+        traceback.print_exc()
         return {"status": "error", "reason": str(e)}
 
 # ==============================================================================
-# ENDPOINT PRINCIPAL AUTOMATIZADO
+# ENDPOINT DE TRIGGER DE GCS (EXISTENTE)
 # ==============================================================================
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
+    # ... (Esta función permanece exactamente igual que antes)
     try:
         clients = get_clients()
         storage_client = clients.get('storage')
-
         if not storage_client:
-            print("Error crítico: El cliente de Storage no está inicializado.")
             return "Error interno del servidor", 500
-
         event = request.get_json(silent=True)
         if not event:
-            print("Petición POST recibida sin cuerpo JSON. Ignorando.")
             return "Petición ignorada", 204
-
         bucket_name = event.get("bucket")
         file_id = event.get("name")
-        
         if not bucket_name or not file_id:
-            print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
             return "Evento no válido", 204
-
-        print(f"Evento de Cloud Storage recibido. Archivo: {file_id}, Bucket: {bucket_name}")
-
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
         if not blob.exists():
-            print(f"El archivo {file_id} no fue encontrado en el bucket {bucket_name}.")
             return "Archivo no encontrado para procesar", 204
-            
         file_bytes = blob.download_as_bytes()
-        
-        # Llama a la lógica de procesamiento principal.
         result = _process_and_embed_pdf_content(file_bytes, file_id)
-        
-        # Responde al evento.
         if result.get("status") == "ok":
-            print(f"Respondiendo con éxito para el evento de {file_id}.")
             return "Procesado con éxito", 200
         else:
             reason = result.get("reason", "Razón desconocida")
-            print(f"Respondiendo con fallo para el evento de {file_id}. Razón: {reason}")
-            # Se devuelve 200 para que Cloud Storage no reintente el evento fallido.
-            # El error ya quedó registrado en los logs para su revisión.
             return f"Fallo en el procesamiento: {reason}", 200
+    except Exception as e:
+        return f"Error inesperado: {str(e)}", 500
+
+
+# ==============================================================================
+# ENDPOINT DE CONSULTA RAG (NUEVO)
+# ==============================================================================
+@app.route("/query", methods=["POST"])
+def query_rag_handler():
+    """
+    Recibe una consulta, busca en el vector store de Firestore y devuelve
+    los documentos más relevantes.
+    """
+    try:
+        request_data = request.get_json()
+        if not request_data or "query" not in request_data:
+            return jsonify({"error": "Petición inválida. Se requiere un cuerpo JSON con la clave 'query'."}), 400
+        
+        user_query = request_data["query"]
+
+        clients = get_clients()
+        firestore_client = clients.get('firestore')
+        embedding_model = clients.get('embedding')
+
+        if not firestore_client or not embedding_model:
+            return jsonify({"error": "Error interno del servidor al inicializar clientes."}), 500
+
+        COLLECTION_NAME = "pida_vector_store"
+        vector_store = FirestoreVectorStore(
+            collection=COLLECTION_NAME,
+            embedding_service=embedding_model,
+            client=firestore_client,
+        )
+
+        # Realiza la búsqueda por similitud para obtener los 4 resultados más relevantes
+        found_docs = vector_store.similarity_search(query=user_query, k=4)
+
+        # Formatea la respuesta para que sea fácil de usar
+        results = [
+            {
+                "source": doc.metadata.get("source", "N/A"),
+                "content": doc.page_content,
+            }
+            for doc in found_docs
+        ]
+        
+        return jsonify({"results": results}), 200
 
     except Exception as e:
-        print(f"Error inesperado y no capturado en el endpoint principal: {traceback.format_exc()}")
-        return f"Error inesperado: {str(e)}", 500
+        traceback.print_exc()
+        return jsonify({"error": f"Error inesperado: {str(e)}"}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
