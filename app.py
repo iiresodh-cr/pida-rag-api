@@ -37,7 +37,7 @@ def get_clients():
     Esta función es segura para usar en entornos de producción con Gunicorn.
     """
     global clients
-    if 'firestore' not in clients: # Solo inicializa si un cliente clave falta
+    if 'firestore' not in clients:
         print("--- Inicializando clientes de Google Cloud por primera vez... ---")
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -54,7 +54,7 @@ def get_clients():
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
             traceback.print_exc()
-            clients = {} # Resetea en caso de fallo para reintentar
+            clients = {}
     return clients
 
 # ==============================================================================
@@ -111,14 +111,22 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
     )
     parser = JsonOutputParser()
     try:
+        # CORRECCIÓN: Este es el formato correcto para enviar datos multimodales a Gemini
         message = HumanMessage(
             content=[
-                {"type": "text", "text": "Extrae los metadatos del siguiente documento en PDF."},
-                {"type": "image_url", "image_url": f"data:application/pdf;base64,{pdf_base64}"}
+                {
+                    "type": "text",
+                    "text": "Extrae los metadatos del siguiente documento en PDF, siguiendo las instrucciones del system prompt."
+                },
+                {
+                    "type": "image_url", # Aunque es PDF, se trata como un objeto multimedia genérico
+                    "image_url": f"data:application/pdf;base64,{pdf_base64}"
+                }
             ]
         )
         response = llm.invoke([SystemMessage(content=system_prompt), message])
         raw_output = response.content if isinstance(response.content, str) else ""
+        
         try:
             json_match = re.search(r'\{.*\}', raw_output, re.DOTALL)
             if json_match:
@@ -131,6 +139,7 @@ def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
         except (OutputParserException, json.JSONDecodeError, TypeError) as e:
             print(f"Error al parsear la salida del LLM como JSON: {e}\nSalida recibida: {raw_output}")
             return {"parsed": None, "raw_output": raw_output}
+            
     except Exception as e:
         print(f"Error al invocar LLM: {e}")
         traceback.print_exc()
@@ -155,7 +164,7 @@ def generate_chunk_ids(documents: List[Document]) -> List[str]:
     doc_id = documents[0].metadata.get("doc_id", "unknown_doc")
     return [f"{doc_id}_p{doc.metadata.get('page_number', 0)}_{i}" for i, doc in enumerate(documents)]
 
-def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     clients = get_clients()
     if not clients:
         raise Exception("Los clientes de GCP no se pudieron inicializar.")
@@ -169,7 +178,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
     parsed_llm_metadata = extracted_metadata_llm_result.get("parsed") or {}
     
     indexing_timestamp = datetime.now(timezone.utc).isoformat()
-    base_metadata = {**incoming_metadata, **parsed_llm_metadata, "doc_id": doc_id, "indexing_timestamp": indexing_timestamp}
+    base_metadata = {**parsed_llm_metadata, "doc_id": doc_id, "indexing_timestamp": indexing_timestamp}
     
     print("Dividiendo el documento en fragmentos...")
     documents = split_pdf_into_documents(doc_id, file_bytes, base_metadata)
@@ -199,114 +208,53 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_me
         "code": 200
     }
 
-def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dict[str, Any]] = None) -> List[Document]:
-    clients = get_clients()
-    if not clients: raise Exception("Los clientes de GCP no se pudieron inicializar.")
-    vector_store = FirestoreVectorStore(
-        collection="pdf_embeded_documents",
-        embedding_service=clients.get('embedding'),
-        client=clients.get('firestore')
-    )
-    if metadata_filters:
-        firestore_filters = []
-        for key, value in metadata_filters.items():
-            if isinstance(value, dict) and ('start' in value or 'end' in value):
-                if 'start' in value: firestore_filters.append(FieldFilter(f'metadata.{key}', '>=', value['start']))
-                if 'end' in value: firestore_filters.append(FieldFilter(f'metadata.{key}', '<=', value['end']))
-            else:
-                firestore_filters.append(FieldFilter(f'metadata.{key}', '==', value))
-        return vector_store.similarity_search(query, k=k, filters=firestore_filters)
-    else:
-        return vector_store.similarity_search(query, k=k)
-
-def format_search_results(documents: List[Document]) -> str:
-    if not documents: return "No se encontraron resultados relevantes."
-    formatted = "Resultados de la Búsqueda:\n\n"
-    for i, doc in enumerate(documents):
-        formatted += f"--- Resultado {i+1} ---\n"
-        formatted += f"ID del Documento: {doc.metadata.get('doc_id')}\nPágina: {doc.metadata.get('page_number')}\n"
-        formatted += f"Tipo: {doc.metadata.get('document_type', 'N/A')}\n"
-        formatted += f"Tema: {doc.metadata.get('topic', 'N/A')}\n"
-        formatted += f"Contenido:\n\"\"\"\n{doc.page_content}\n\"\"\"\n\n"
-    return formatted
-
 # ==============================================================================
-# ENDPOINTS
+# ENDPOINT PRINCIPAL AUTOMATIZADO
 # ==============================================================================
-
-@app.route("/", methods=["GET", "POST"])
-def main_endpoint():
-    """
-    Endpoint principal. Responde a GET para health checks y a POST para eventos.
-    """
-    if request.method == 'GET':
-        return jsonify(status="ok", message="PIDA RAG API is running."), 200
-    
-    if request.method == 'POST':
-        try:
-            # Lógica para manejar el evento de GCS
-            event = request.get_json(silent=True)
-            if not event:
-                print("Petición POST vacía o sin JSON. Ignorando.")
-                return "Petición ignorada", 204
-
-            bucket_name = event.get("bucket")
-            file_id = event.get("name")
-            
-            if not bucket_name or not file_id:
-                print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
-                return "Evento no válido", 204
-
-            print(f"Archivo detectado: {file_id} en bucket: {bucket_name}")
-
-            clients = get_clients()
-            storage_client = clients.get('storage')
-            if not storage_client:
-                print("Error: Storage client no inicializado.")
-                return "Error interno del servidor", 500
-
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(file_id)
-            if not blob.exists():
-                print(f"Archivo {file_id} no encontrado en el bucket.")
-                return f"Archivo no encontrado", 204 # Devolvemos 2xx para no reintentar
-                
-            file_bytes = blob.download_as_bytes()
-            
-            result = _process_and_embed_pdf_content(file_bytes, file_id, {})
-            
-            if result.get("status") == "ok":
-                print(f"Éxito al procesar {file_id}.")
-                return "Procesado con éxito", 200
-            else:
-                reason = result.get("reason", "Razón desconocida")
-                print(f"Fallo al procesar {file_id}: {reason}")
-                return f"Fallo en el procesamiento: {reason}", 500
-
-        except Exception as e:
-            print(f"Error inesperado procesando el evento: {traceback.format_exc()}")
-            return f"Error inesperado: {str(e)}", 500
-
-@app.route("/query", methods=["POST"])
-def query_endpoint():
-    """
-    Endpoint para hacer consultas a la base de datos de documentos.
-    """
+@app.route("/", methods=["POST"])
+def handle_gcs_event():
     try:
-        data = request.get_json() if request.is_json else request.form.to_dict()
-        query_text = data.get("query")
-        if not query_text: return jsonify(status="error", reason="Falta 'query'"), 400
+        clients = get_clients()
+        storage_client = clients.get('storage')
+        if not storage_client:
+            print("Error: Storage client no inicializado.")
+            return "Error interno del servidor", 500
+
+        event = request.get_json(silent=True)
+        if not event:
+            print("Petición POST recibida sin cuerpo JSON. Ignorando.")
+            return "Petición ignorada", 204
+
+        bucket_name = event.get("bucket")
+        file_id = event.get("name")
         
-        k_results = int(data.get("k", 3))
-        metadata_filters = data.get("metadata_filters")
+        if not bucket_name or not file_id:
+            print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
+            return "Evento no válido", 204
+
+        print(f"Archivo detectado: {file_id} en bucket: {bucket_name}")
+
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_id)
+        if not blob.exists():
+            print(f"Archivo {file_id} no encontrado en el bucket.")
+            return "Archivo no encontrado para procesar", 204
+            
+        file_bytes = blob.download_as_bytes()
         
-        results = perform_similarity_search(query=query_text, k=k_results, metadata_filters=metadata_filters)
-        formatted_results = format_search_results(results)
+        result = _process_and_embed_pdf_content(file_bytes, file_id)
         
-        return jsonify(status="ok", results=formatted_results), 200
+        if result.get("status") == "ok":
+            print(f"Éxito al procesar {file_id}.")
+            return "Procesado con éxito", 200
+        else:
+            reason = result.get("reason", "Razón desconocida")
+            print(f"Fallo al procesar {file_id}: {reason}")
+            return f"Fallo en el procesamiento: {reason}", 500
+
     except Exception as e:
-        print(traceback.format_exc())
-        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
+        print(f"Error inesperado procesando el evento: {traceback.format_exc()}")
+        return f"Error inesperado: {str(e)}", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
