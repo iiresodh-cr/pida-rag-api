@@ -1,4 +1,4 @@
-# app.py (Versión Final con Inicialización Segura "Lazy Loading")
+# app.py
 
 import os
 import hashlib
@@ -25,6 +25,7 @@ from langchain_core.exceptions import OutputParserException
 from google.cloud import firestore, storage
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+# --- Creación de la Aplicación Flask ---
 app = Flask(__name__)
 
 # --- Declaración de Clientes Globales (sin inicializar) ---
@@ -33,10 +34,9 @@ clients = {}
 def get_clients():
     """
     Inicializa los clientes de Google Cloud de forma 'perezosa' (solo una vez).
-    Esta función es segura para usar en entornos de producción con Gunicorn.
     """
     global clients
-    if 'firestore' not in clients: # Solo inicializa si un cliente clave falta
+    if 'firestore' not in clients:
         print("--- Inicializando clientes de Google Cloud por primera vez... ---")
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
@@ -53,59 +53,22 @@ def get_clients():
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
             traceback.print_exc()
-            clients = {} # Resetea en caso de fallo para reintentar
+            clients = {}
     return clients
 
 # ==============================================================================
 # FUNCIONES AUXILIARES
 # ==============================================================================
-def compute_hash(file_bytes: bytes) -> str:
-    return hashlib.sha256(file_bytes).hexdigest()
+# (Aquí van todas tus funciones auxiliares: compute_hash, delete_embedded_documents_by_doc_id,
+#  extract_pdf_metadata_with_llm, split_pdf_into_documents, etc.
+#  Asegúrate de que el código de estas funciones esté aquí)
 
-def delete_embedded_documents_by_doc_id(doc_id: str) -> bool:
-    firestore_client = get_clients().get('firestore')
-    if not firestore_client: return False
-    try:
-        # ... (código sin cambios)
-    except Exception as e:
-        # ... (código sin cambios)
-
-def extract_pdf_metadata_with_llm(file_bytes: bytes) -> Dict[str, Any]:
-    llm = get_clients().get('llm')
-    if not llm: return {"parsed": None, "raw_output": "LLM client not initialized"}
-    # ... (código sin cambios)
-
-def split_pdf_into_documents(doc_id: str, file_bytes: bytes, base_metadata: Dict[str, Any]) -> List[Document]:
-    # ... (código sin cambios)
-
-def generate_chunk_ids(documents: List[Document]) -> List[str]:
-    # ... (código sin cambios)
-
-def _process_and_embed_pdf_content(file_bytes: bytes, filename: str, incoming_metadata: Dict[str, Any]) -> Dict[str, Any]:
-    clients = get_clients()
-    if not clients: raise Exception("Los clientes de GCP no se pudieron inicializar.")
-    
-    doc_id = compute_hash(file_bytes)
-    delete_embedded_documents_by_doc_id(doc_id)
-    # ... (resto de la función)
-    vector_store = FirestoreVectorStore(
-        collection="pdf_embeded_documents",
-        embedding_service=clients.get('embedding'),
-        client=clients.get('firestore')
-    )
-    # ... (resto de la función)
-
-def format_search_results(documents: List[Document]) -> str:
-    # ... (código sin cambios)
-
-def perform_similarity_search(query: str, k: int, metadata_filters: Optional[Dict[str, Any]] = None) -> List[Document]:
-    clients = get_clients()
-    if not clients: raise Exception("Los clientes de GCP no se pudieron inicializar.")
-    # ... (resto de la función)
+# ...
 
 # ==============================================================================
 # ENDPOINTS DE LA API
 # ==============================================================================
+
 @app.route("/")
 def index():
     return jsonify(status="ok", message="PIDA RAG API is running."), 200
@@ -115,15 +78,42 @@ def process_pdf_from_bucket_endpoint():
     try:
         clients = get_clients()
         storage_client = clients.get('storage')
+
         if not storage_client:
             return jsonify(status="error", reason="Storage client not initialized"), 500
 
-        # ... (resto del endpoint sin cambios, usando `storage_client` local)
-        # ...
+        if not request.is_json:
+            return jsonify(status="error", reason="Content-Type must be application/json"), 400
+        
+        data = request.get_json()
+        bucket_name = data.get("bucket_name")
+        file_id = data.get("file_id")
+
+        if not bucket_name or not file_id:
+            return jsonify(status="error", reason="Missing 'bucket_name' or 'file_id'"), 400
+        
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_id)
+        
+        if not blob.exists():
+            return jsonify(status="error", reason=f"File '{file_id}' not found in bucket '{bucket_name}'"), 404
+        
+        file_bytes = blob.download_as_bytes()
+        result = _process_and_embed_pdf_content(file_bytes, file_id, data.get("metadata", {}))
+        
+        if result.get("status") == "ok":
+            return jsonify(result.get("data")), result.get("code")
+        else:
+            return jsonify(status="error", reason=result.get("reason")), result.get("code")
+
     except Exception as e:
-        # ... (resto del endpoint sin cambios)
+        print(traceback.format_exc())
+        return jsonify(status="error", reason=f"Error inesperado: {str(e)}"), 500
 
-# ... (El resto de tus endpoints) ...
+# (Aquí irían los demás endpoints)
 
+# ...
+
+# El bloque final para ejecución local
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
