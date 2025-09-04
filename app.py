@@ -29,13 +29,21 @@ def get_clients():
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
             VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
+
+            # --- MODIFICACIÓN REALIZADA AQUÍ ---
+            # 1. Lee el nombre del modelo desde la variable de entorno.
+            # 2. Si no existe, usa "gemini-2.5-flash" por defecto.
+            MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
             
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
 
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
             clients['embedding'] = VertexAIEmbeddings(model_name="text-embedding-004")
-            clients['llm'] = ChatVertexAI(model_name="gemini-2.5-flash") 
+            
+            # 3. Usa la variable para inicializar el cliente del modelo.
+            clients['llm'] = ChatVertexAI(model_name=MODEL_NAME) 
             
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
         except Exception as e:
