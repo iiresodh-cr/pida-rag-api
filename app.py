@@ -47,14 +47,14 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# FUNCIÓN DE PROCESAMIENTO DE PDF
+# FUNCIÓN DE PROCESamiento DE PDF (MODIFICADA CON BATCHING)
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore.
+    Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore
+    en lotes para no superar los límites de la base de datos.
     """
     try:
-        # ... (código interno de la función sin cambios) ...
         print(f"Iniciando procesamiento para el archivo: {filename}")
         clients = get_clients()
         firestore_client = clients.get('firestore')
@@ -86,15 +86,22 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
             )
             documents.append(doc)
         
-        print(f"Paso 4/4: Guardando documentos y embeddings en Firestore...")
-        # --- CORRECCIÓN DE NOMBRE DE COLECCIÓN ---
+        # --- MODIFICACIÓN CLAVE DE PROCESAMIENTO POR LOTES ---
         COLLECTION_NAME = "pdf_embeded_documents"
         vector_store = FirestoreVectorStore(
             collection=COLLECTION_NAME,
             embedding_service=embedding_model,
             client=firestore_client,
         )
-        vector_store.add_documents(documents)
+
+        batch_size = 100 # Un tamaño de lote seguro, muy por debajo del límite de 500
+        print(f"Paso 4/4: Guardando {len(documents)} documentos en Firestore en lotes de {batch_size}...")
+
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i:i + batch_size]
+            print(f"  -> Guardando lote {int(i/batch_size) + 1} de {int(len(documents)/batch_size) + 1}...")
+            # Aquí se generan los embeddings para el lote y se guardan
+            vector_store.add_documents(batch)
         
         print(f"Procesamiento completado con éxito para: {filename}")
         return {"status": "ok", "message": f"Archivo {filename} procesado y añadido a la colección '{COLLECTION_NAME}'."}
@@ -155,7 +162,6 @@ def query_rag_handler():
         if not firestore_client or not embedding_model:
             return jsonify({"error": "Error interno del servidor al inicializar clientes."}), 500
 
-        # --- CORRECCIÓN DE NOMBRE DE COLECCIÓN ---
         COLLECTION_NAME = "pdf_embeded_documents"
         vector_store = FirestoreVectorStore(
             collection=COLLECTION_NAME,
