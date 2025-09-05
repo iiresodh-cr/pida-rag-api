@@ -29,10 +29,8 @@ def get_clients():
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
             VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
-
-            # --- MODIFICACIÓN REALIZADA AQUÍ ---
-            # 1. Lee el nombre del modelo desde la variable de entorno.
-            # 2. Si no existe, usa "gemini-2.5-flash" por defecto.
+            
+            # Lee el nombre del modelo desde la variable de entorno.
             MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
             print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
             
@@ -41,8 +39,6 @@ def get_clients():
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
             clients['embedding'] = VertexAIEmbeddings(model_name="text-embedding-004")
-            
-            # 3. Usa la variable para inicializar el cliente del modelo.
             clients['llm'] = ChatVertexAI(model_name=MODEL_NAME) 
             
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
@@ -53,11 +49,12 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# FUNCIÓN DE PROCESAMIENTO DE PDF (EXISTENTE)
+# FUNCIÓN DE PROCESAMIENTO DE PDF (MODIFICADA CON ENRIQUECIMIENTO)
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore.
+    Añade metadatos (título) al contenido del fragmento para mejorar la búsqueda semántica.
     """
     try:
         print(f"Iniciando procesamiento para el archivo: {filename}")
@@ -81,14 +78,26 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
         chunks = text_splitter.split_text(text_content)
         
+        # --- MODIFICACIÓN CLAVE DE ENRIQUECIMIENTO ---
+        # Extraemos un título potencial del nombre del archivo para usarlo como metadato.
+        book_title = os.path.splitext(filename)[0].replace("_", " ").title()
+        print(f"Título extraído para metadatos: '{book_title}'")
+        
         # 3. Crear objetos Document de LangChain para cada fragmento.
-        print(f"Paso 3/4: Creando {len(chunks)} objetos Document...")
-        documents = [
-            Document(
-                page_content=chunk,
-                metadata={"source": filename, "chunk_index": i}
-            ) for i, chunk in enumerate(chunks)
-        ]
+        print(f"Paso 3/4: Creando {len(chunks)} objetos Document enriquecidos...")
+        documents = []
+        for i, chunk in enumerate(chunks):
+            # Preparamos el contenido enriquecido que se convertirá en vector.
+            # Al incluir el título en el texto, aumentamos la similitud semántica
+            # con preguntas que mencionen dicho título.
+            enriched_content = f"Título del documento: {book_title}. Contenido: {chunk}"
+            
+            # El metadato sigue siendo útil por separado para filtrados futuros.
+            doc = Document(
+                page_content=enriched_content,
+                metadata={"source": filename, "chunk_index": i, "title": book_title}
+            )
+            documents.append(doc)
         
         # 4. Inicializar el Vector Store de Firestore y añadir los documentos.
         print(f"Paso 4/4: Guardando documentos y embeddings en Firestore...")
@@ -113,43 +122,55 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
 # ==============================================================================
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
-    # ... (Esta función permanece exactamente igual que antes)
     try:
         clients = get_clients()
         storage_client = clients.get('storage')
+
         if not storage_client:
+            print("Error crítico: El cliente de Storage no está inicializado.")
             return "Error interno del servidor", 500
+
         event = request.get_json(silent=True)
         if not event:
+            print("Petición POST recibida sin cuerpo JSON. Ignorando.")
             return "Petición ignorada", 204
+
         bucket_name = event.get("bucket")
         file_id = event.get("name")
+        
         if not bucket_name or not file_id:
+            print(f"Evento ignorado: no es un evento de Cloud Storage válido. Evento: {event}")
             return "Evento no válido", 204
+
+        print(f"Evento de Cloud Storage recibido. Archivo: {file_id}, Bucket: {bucket_name}")
+
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
         if not blob.exists():
+            print(f"El archivo {file_id} no fue encontrado en el bucket {bucket_name}.")
             return "Archivo no encontrado para procesar", 204
+            
         file_bytes = blob.download_as_bytes()
+        
         result = _process_and_embed_pdf_content(file_bytes, file_id)
+        
         if result.get("status") == "ok":
+            print(f"Respondiendo con éxito para el evento de {file_id}.")
             return "Procesado con éxito", 200
         else:
             reason = result.get("reason", "Razón desconocida")
+            print(f"Respondiendo con fallo para el evento de {file_id}. Razón: {reason}")
             return f"Fallo en el procesamiento: {reason}", 200
+
     except Exception as e:
+        print(f"Error inesperado y no capturado en el endpoint principal: {traceback.format_exc()}")
         return f"Error inesperado: {str(e)}", 500
 
-
 # ==============================================================================
-# ENDPOINT DE CONSULTA RAG (NUEVO)
+# ENDPOINT DE CONSULTA RAG (EXISTENTE)
 # ==============================================================================
 @app.route("/query", methods=["POST"])
 def query_rag_handler():
-    """
-    Recibe una consulta, busca en el vector store de Firestore y devuelve
-    los documentos más relevantes.
-    """
     try:
         request_data = request.get_json()
         if not request_data or "query" not in request_data:
@@ -171,10 +192,8 @@ def query_rag_handler():
             client=firestore_client,
         )
 
-        # Realiza la búsqueda por similitud para obtener los 4 resultados más relevantes
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
-        # Formatea la respuesta para que sea fácil de usar
         results = [
             {
                 "source": doc.metadata.get("source", "N/A"),
