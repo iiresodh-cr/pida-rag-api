@@ -1,8 +1,3 @@
-# --- PARCHE PARA ASYNCIO (Debe estar al principio de todo) ---
-import nest_asyncio
-nest_asyncio.apply()
-# --- FIN DEL PARCHE ---
-
 import os
 import io
 import json
