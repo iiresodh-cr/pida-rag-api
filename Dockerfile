@@ -18,5 +18,5 @@ COPY . .
 EXPOSE 8080
 
 # --- COMANDO FINAL Y DEFINITIVO ---
-# Se usa el worker de Uvicorn, diseñado para aplicaciones asíncronas.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "app:app"]
+# Usa el worker 'gevent' para compatibilidad con asyncio.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--worker-class", "gevent", "--timeout", "0", "app:app"]
