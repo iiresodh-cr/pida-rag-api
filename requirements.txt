@@ -10,3 +10,4 @@ google-cloud-firestore>=2.11.0
 google-cloud-storage>=2.8.0
 google-cloud-tasks>=2.13.0
 nest-asyncio>=1.6.0
+gevent>=23.9.1
