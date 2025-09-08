@@ -1,11 +1,11 @@
 Flask>=3.0.0
 gunicorn>=21.2.0
 PyPDF>=4.0.0
-# --- LIBRERÍAS LANGCHAIN ACTUALIZADAS A LAS ÚLTIMAS VERSIONES ---
-langchain-core==0.3.75
-langchain-text-splitters==0.3.11
-langchain-google-firestore==0.5.0
-langchain-google-genai==2.1.10
+# --- LIBRERÍAS LANGCHAIN ACTUALIZADAS PARA USAR 'genai' ---
+langchain-core>=0.2.1
+langchain-text-splitters>=0.2.0
+langchain-google-firestore>=0.1.4
+langchain-google-genai>=1.0.4  # <-- LIBRERÍA NUEVA Y RECOMENDADA
 # --- FIN DE LIBRERÍAS ACTUALIZADAS ---
 google-cloud-aiplatform>=1.50.0
 google-cloud-firestore>=2.11.0
