@@ -18,5 +18,5 @@ COPY . .
 EXPOSE 8080
 
 # El comando para iniciar la aplicación usando el servidor Gunicorn.
-# --timeout 0 permite que Cloud Run gestione los tiempos de espera de las solicitudes.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--timeout", "0", "app:app"]
+# Se elimina --timeout 0 para que Cloud Run gestione los tiempos de espera.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "app:app"]
