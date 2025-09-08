@@ -27,6 +27,7 @@ steps:
   - '--image=gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA'
   - '--region=us-central1'
   - '--allow-unauthenticated'
+  - '--timeout=1800'  # <-- AUMENTA EL TIMEOUT A 30 MINUTOS
   - '--service-account=pida-indexer-sa@pida-470320.iam.gserviceaccount.com'
   # Referencia a las variables de entorno que son secretos
   - '--update-secrets=LANGCHAIN_GOOGLE_GEMINI_API_KEY=gemini-api-key:latest'
