@@ -11,7 +11,8 @@ import vertexai
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
-from langchain_google_vertexai import VertexAIEmbeddings, ChatVertexAI
+# --- CAMBIO DE LIBRERÍA: Se importa la nueva clase de Embeddings y Chat ---
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from google.cloud import firestore, storage, tasks_v2
 
 # --- Creación de la Aplicación Flask ---
@@ -28,30 +29,31 @@ def get_clients():
     if 'firestore' not in clients:
         print("--- Inicializando clientes de Google Cloud por primera vez... ---")
         try:
-            # --- Se leen las variables de entorno para la configuración ---
             env = os.environ
             PROJECT_ID = env.get("PROJECT_ID")
             VERTEX_AI_LOCATION = env.get("VERTEX_AI_LOCATION")
-            
-            # --- Se respeta la definición del modelo ---
             MODEL_NAME = env.get("GEMINI_MODEL", "gemini-2.5-flash")
             print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
 
-            # --- Nuevas variables para Cloud Tasks ---
             TASK_QUEUE_ID = env.get("TASK_QUEUE_ID") 
             CLOUD_RUN_URL = env.get("CLOUD_RUN_URL")
             
+            # La inicialización de vertexai ya no es necesaria para estas librerías,
+            # pero la dejamos por si se usan otros servicios de Vertex AI.
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
 
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
             
-            # --- Este código es correcto y funcionará con las librerías actualizadas ---
-            clients['embedding'] = VertexAIEmbeddings(
-                model_name="gemini-embedding-001",
-                model_kwargs={"output_dimensionality": 768}
+            # --- SOLUCIÓN: Se usa la nueva clase GoogleGenerativeAIEmbeddings ---
+            # Esta clase acepta el parámetro 'output_dimensionality' directamente.
+            clients['embedding'] = GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001", 
+                output_dimensionality=768
             )
-            clients['llm'] = ChatVertexAI(model_name=MODEL_NAME) 
+            
+            # También usamos la clase de chat correspondiente de la nueva librería.
+            clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
             
             clients['tasks'] = tasks_v2.CloudTasksClient()
 
@@ -62,7 +64,7 @@ def get_clients():
                 "run_url": CLOUD_RUN_URL
             }
             
-            print("--- Clientes de Google Cloud inicializados correctamente. ---")
+            print("--- Clientes de Google Cloud inicializados correctamente con 'langchain-google-genai'. ---")
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
             traceback.print_exc()
@@ -197,7 +199,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i + batch_size]
             print(f"  -> Guardando lote {int(i/batch_size) + 1} de {int(len(documents)/batch_size) + 1}...")
-            # LangChain usa automáticamente el task_type='RETRIEVAL_DOCUMENT' aquí.
             vector_store.add_documents(batch)
         
         print(f"Procesamiento completado con éxito para: {filename}")
@@ -234,7 +235,6 @@ def query_rag_handler():
             client=firestore_client,
         )
         
-        # LangChain usa automáticamente el task_type='RETRIEVAL_QUERY' aquí.
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
         results = [{"source": doc.metadata.get("source", "N/A"), "content": doc.page_content} for doc in found_docs]
