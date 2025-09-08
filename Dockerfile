@@ -8,7 +8,7 @@ WORKDIR /app
 
 # Copia solo el archivo de requerimientos primero para aprovechar el caché.
 COPY requirements.txt .
-# Instala las dependencias, incluyendo gunicorn para producción.
+# Instala las dependencias.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Ahora, copia todo el código de tu aplicación.
@@ -18,5 +18,5 @@ COPY . .
 EXPOSE 8080
 
 # --- COMANDO FINAL Y DEFINITIVO ---
-# Usa el worker 'gevent' para compatibilidad con asyncio.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--worker-class", "gevent", "--timeout", "0", "app:app"]
+# Se usa el worker de Uvicorn, diseñado para aplicaciones asíncronas.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--worker-class", "uvicorn.workers.UvicornWorker", "app:app"]
