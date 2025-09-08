@@ -17,7 +17,6 @@ COPY . .
 # Expone el puerto 8080, el estándar para Cloud Run.
 EXPOSE 8080
 
-# --- COMANDO FINAL CORREGIDO ---
-# Se cambia el worker a 'gevent' para compatibilidad con asyncio.
-# Se añade '--worker-class gevent'
+# --- COMANDO FINAL Y DEFINITIVO ---
+# Usa el worker 'gevent' para compatibilidad con asyncio.
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--worker-class", "gevent", "--timeout", "0", "app:app"]
