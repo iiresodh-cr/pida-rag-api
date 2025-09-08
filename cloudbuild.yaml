@@ -1,11 +1,6 @@
 # cloudbuild.yaml
-# Este archivo ha sido modificado para separar el proceso en 3 pasos explícitos
-# y añadir el flag --no-cache para forzar una instalación limpia de las dependencias.
-
 steps:
 # Paso 1: Construir la imagen de Docker.
-# Se añade el flag '--no-cache' para asegurar que las dependencias de requirements.txt
-# se instalen desde cero en cada despliegue, eliminando la advertencia de obsolescencia.
 - name: 'gcr.io/cloud-builders/docker'
   id: Build
   args:
@@ -23,21 +18,22 @@ steps:
   - 'gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA'
 
 # Paso 3: Desplegar la imagen desde el Container Registry a Cloud Run.
-# Se reemplaza '--source=.' por '--image' para usar la imagen que acabamos de construir y subir.
 - name: 'gcr.io/cloud-builders/gcloud'
   id: Deploy
   args:
   - 'run'
   - 'deploy'
-  - 'pida-rag-api' # El nombre exacto de tu servicio de Cloud Run
-  - '--image=gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA' # Usa la imagen recién creada
+  - 'pida-rag-api'
+  - '--image=gcr.io/$PROJECT_ID/pida-rag-api:$COMMIT_SHA'
   - '--region=us-central1'
-  - '--allow-unauthenticated' # Permite que la API sea pública
-  - '--service-account=pida-indexer-sa@pida-470320.iam.gserviceaccount.com' # La cuenta de servicio de API
+  - '--allow-unauthenticated'
+  - '--service-account=pida-indexer-sa@pida-470320.iam.gserviceaccount.com'
   # Referencia a las variables de entorno que son secretos
   - '--update-secrets=LANGCHAIN_GOOGLE_GEMINI_API_KEY=gemini-api-key:latest'
-  # Referencia a las variables de entorno normales
-  - '--update-env-vars=PROJECT_ID=pida-470320,VERTEX_AI_LOCATION=us-central1'
+  # --- VARIABLES DE ENTORNO ACTUALIZADAS Y COMPLETAS ---
+  # IMPORTANTE: Reemplaza la URL con la URL real de tu servicio Cloud Run una vez desplegado.
+  # Usa el ID de la cola que creaste en el Paso 1 (ej: pdf-processing-queue).
+  - '--update-env-vars=PROJECT_ID=pida-470320,VERTEX_AI_LOCATION=us-central1,TASK_QUEUE_ID=pdf-processing-queue,CLOUD_RUN_URL=https://pida-rag-api-q54fi7z3ka-uc.a.run.app'
 
 # Especifica la imagen que se ha subido como resultado de esta construcción.
 images:
