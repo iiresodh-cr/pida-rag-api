@@ -18,5 +18,5 @@ COPY . .
 EXPOSE 8080
 
 # --- COMANDO FINAL Y DEFINITIVO ---
-# Usa el worker 'gevent' para compatibilidad con asyncio.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--worker-class", "gevent", "--timeout", "0", "app:app"]
+# Volvemos al worker estándar.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--timeout", "0", "app:app"]
