@@ -1,35 +1,24 @@
+# --- PARCHE PARA ASYNCIO (Debe estar al principio de todo) ---
+import nest_asyncio
+nest_asyncio.apply()
+# --- FIN DEL PARCHE ---
+
 import os
 import io
 import json
 import traceback
 from flask import Flask, request, jsonify
 from pypdf import PdfReader
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 # LangChain y Google
+import vertexai
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
-from langchain_core.embeddings import Embeddings
-import google.generativeai as genai
+# --- LIBRERÍA CORRECTA QUE USA LOS PERMISOS DE IAM ---
+from langchain_google_vertexai import VertexAIEmbeddings, ChatVertexAI
 from google.cloud import firestore, storage
-
-# --- CLASE DE EMBEDDING PERSONALIZADA ---
-# Esto reemplaza la librería de LangChain que causaba el conflicto.
-class GeminiEmbeddings(Embeddings):
-    def __init__(self, model: str = "models/embedding-001", task_type: str = "RETRIEVAL_DOCUMENT"):
-        self.model = model
-        self.task_type = task_type
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return genai.embed_content(
-            model=self.model,
-            content=texts,
-            task_type=self.task_type
-        )['embedding']
-
-    def embed_query(self, text: str) -> List[float]:
-        return self.embed_documents([text])[0]
 
 # --- Creación de la Aplicación Flask ---
 app = Flask(__name__)
@@ -46,12 +35,22 @@ def get_clients():
         print("--- Inicializando clientes de Google Cloud por primera vez... ---")
         try:
             env = os.environ
-            GEMINI_API_KEY = env.get("LANGCHAIN_GOOGLE_GEMINI_API_KEY")
-            genai.configure(api_key=GEMINI_API_KEY)
-            
+            PROJECT_ID = env.get("PROJECT_ID")
+            VERTEX_AI_LOCATION = env.get("VERTEX_AI_LOCATION")
+            MODEL_NAME = env.get("GEMINI_MODEL", "gemini-2.5-flash")
+            print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
+
+            vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
+
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
-            clients['embedding'] = GeminiEmbeddings()
+            
+            # --- USANDO LA CLASE CORRECTA ---
+            # VertexAIEmbeddings usa la API de Vertex AI, que es la que tiene permisos.
+            clients['embedding'] = VertexAIEmbeddings(
+                model_name="textembedding-gecko@003",
+            )
+            clients['llm'] = ChatVertexAI(model_name=MODEL_NAME)
             
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
         except Exception as e:
@@ -65,6 +64,9 @@ def get_clients():
 # ==============================================================================
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
+    """
+    Recibe el evento de GCS y procesa el archivo directamente.
+    """
     try:
         clients_data = get_clients()
         storage_client = clients_data.get('storage')
@@ -80,6 +82,7 @@ def handle_gcs_event():
         file_id = event["name"]
         
         print(f"Evento recibido para el archivo: {file_id}")
+
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
         
@@ -88,6 +91,7 @@ def handle_gcs_event():
             return "Archivo no encontrado", 204
         
         file_bytes = blob.download_as_bytes()
+        
         result = _process_and_embed_pdf_content(file_bytes, file_id)
 
         if result.get("status") == "ok":
@@ -107,6 +111,9 @@ def handle_gcs_event():
 # FUNCIÓN DE PROCESAMIENTO DE PDF
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """
+    Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore.
+    """
     try:
         print(f"Iniciando procesamiento para el archivo: {filename}")
         clients = get_clients()
