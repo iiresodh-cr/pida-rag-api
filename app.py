@@ -38,12 +38,7 @@ def get_clients():
 
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
-
-            clients['embedding'] = GoogleGenerativeAIEmbeddings(
-                model="models/embedding-001",
-                output_dimensionality=768
-            )
-
+            clients['embedding'] = GoogleGenerativeAIEmbeddings(model="models/embedding-001", output_dimensionality=768)
             clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
             
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
@@ -69,6 +64,7 @@ def handle_gcs_event():
         
         event = request.get_json(silent=True)
         if not event or "bucket" not in event or "name" not in event:
+            print("Petición ignorada: evento no válido.")
             return "Petición ignorada", 204
         
         bucket_name = event["bucket"]
@@ -80,16 +76,19 @@ def handle_gcs_event():
         blob = bucket.blob(file_id)
         
         if not blob.exists():
-            return "Archivo no encontrado para procesar", 204
+            print(f"Archivo no encontrado: {file_id}")
+            return "Archivo no encontrado", 204
         
         file_bytes = blob.download_as_bytes()
         
         result = _process_and_embed_pdf_content(file_bytes, file_id)
 
         if result.get("status") == "ok":
+            print(f"Procesamiento exitoso para: {file_id}")
             return "Procesado con éxito", 200
         else:
             reason = result.get("reason", "Razón desconocida")
+            print(f"Fallo en el procesamiento para {file_id}: {reason}")
             return f"Fallo en el procesamiento: {reason}", 200
 
     except Exception as e:
