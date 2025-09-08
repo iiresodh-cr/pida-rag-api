@@ -1,8 +1,3 @@
-# --- PARCHE PARA ASYNCIO (Debe estar al principio de todo) ---
-import nest_asyncio
-nest_asyncio.apply()
-# --- FIN DEL PARCHE ---
-
 import os
 import io
 import json
@@ -17,7 +12,7 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from google.cloud import firestore, storage, tasks_v2
+from google.cloud import firestore, storage
 
 # --- Creación de la Aplicación Flask ---
 app = Flask(__name__)
@@ -39,9 +34,6 @@ def get_clients():
             MODEL_NAME = env.get("GEMINI_MODEL", "gemini-2.5-flash")
             print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
 
-            TASK_QUEUE_ID = env.get("TASK_QUEUE_ID")
-            CLOUD_RUN_URL = env.get("CLOUD_RUN_URL")
-
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
 
             clients['firestore'] = firestore.Client()
@@ -53,16 +45,7 @@ def get_clients():
             )
 
             clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
-
-            clients['tasks'] = tasks_v2.CloudTasksClient()
-
-            clients['config'] = {
-                "project_id": PROJECT_ID,
-                "location": VERTEX_AI_LOCATION,
-                "queue_id": TASK_QUEUE_ID,
-                "run_url": CLOUD_RUN_URL
-            }
-
+            
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
@@ -71,91 +54,51 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# ENDPOINT 1: RECEPTOR DE GCS Y CREADOR DE TAREAS
+# ENDPOINT DE TRIGGER DE GCS (PROCESAMIENTO DIRECTO)
 # ==============================================================================
 @app.route("/", methods=["POST"])
-def gcs_event_receiver():
+def handle_gcs_event():
     """
-    Recibe la notificación de GCS, crea una tarea en Cloud Tasks y responde OK inmediatamente.
+    Recibe el evento de GCS y procesa el archivo directamente.
     """
     try:
-        clients = get_clients()
-        tasks_client = clients.get('tasks')
-        config = clients.get('config')
-
+        clients_data = get_clients()
+        storage_client = clients_data.get('storage')
+        if not storage_client:
+            return "Error interno del servidor", 500
+        
         event = request.get_json(silent=True)
         if not event or "bucket" not in event or "name" not in event:
-            print("Petición ignorada: evento no válido.")
-            return "Evento no válido", 204
-
-        payload = {"bucket": event["bucket"], "filename": event["name"]}
-
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": f"{config['run_url']}/process-task",
-                "headers": {"Content-type": "application/json"},
-                "body": json.dumps(payload).encode(),
-            }
-        }
-
-        parent = tasks_client.queue_path(config['project_id'], config['location'], config['queue_id'])
-        tasks_client.create_task(parent=parent, task=task)
-
-        print(f"Tarea creada para el archivo: {event['name']}")
-        return "Tarea creada con éxito", 200
-
-    except Exception as e:
-        print(f"!!! ERROR en gcs_event_receiver: {e}")
-        traceback.print_exc()
-        return "Error al crear la tarea, pero evento aceptado.", 200
-
-# ==============================================================================
-# ENDPOINT 2: TRABAJADOR DE PROCESAMIENTO DE PDF
-# ==============================================================================
-@app.route("/process-task", methods=["POST"])
-def pdf_processing_worker():
-    """
-    Este endpoint es llamado por Cloud Tasks para hacer el trabajo pesado.
-    """
-    try:
-        clients = get_clients()
-        storage_client = clients.get('storage')
-        if not storage_client:
-            return "Error interno: cliente de storage no inicializado", 500
-
-        task_payload = request.get_json(silent=True)
-        if not task_payload:
-            return "Cuerpo de la petición inválido", 400
-
-        bucket_name = task_payload.get("bucket")
-        file_id = task_payload.get("filename")
-
-        print(f"Trabajador iniciando procesamiento para: {file_id}")
+            return "Petición ignorada", 204
+        
+        bucket_name = event["bucket"]
+        file_id = event["name"]
+        
+        print(f"Evento recibido para el archivo: {file_id}")
 
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
-
+        
         if not blob.exists():
-            print(f"El archivo {file_id} no se encontró en el bucket {bucket_name}.")
-            return "Archivo no encontrado", 204
-
+            return "Archivo no encontrado para procesar", 204
+        
         file_bytes = blob.download_as_bytes()
+        
         result = _process_and_embed_pdf_content(file_bytes, file_id)
 
         if result.get("status") == "ok":
-            return "Procesado con éxito por el trabajador", 200
+            return "Procesado con éxito", 200
         else:
             reason = result.get("reason", "Razón desconocida")
-            return f"Fallo en el procesamiento: {reason}", 500
+            return f"Fallo en el procesamiento: {reason}", 200
 
     except Exception as e:
-        print(f"!!! ERROR en pdf_processing_worker: {e}")
+        print(f"!!! ERROR en handle_gcs_event: {e}")
         traceback.print_exc()
-        return f"Error inesperado en el trabajador: {str(e)}", 500
+        return f"Error inesperado: {str(e)}", 500
 
 # ==============================================================================
-# FUNCIÓN DE PROCESAMIENTO DE PDF
+# FUNCIÓN DE PROCESAMIENTO DE PDF (SIN CAMBIOS)
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
@@ -209,7 +152,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         return {"status": "error", "reason": str(e)}
 
 # ==============================================================================
-# ENDPOINT DE CONSULTA RAG
+# ENDPOINT DE CONSULTA RAG (SIN CAMBIOS)
 # ==============================================================================
 @app.route("/query", methods=["POST"])
 def query_rag_handler():
@@ -237,7 +180,7 @@ def query_rag_handler():
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
         results = [{"source": doc.metadata.get("source", "N/A"), "content": doc.page_content} for doc in found_docs]
-
+        
         return jsonify({"results": results}), 200
 
     except Exception as e:
