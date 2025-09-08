@@ -9,5 +9,5 @@ google-cloud-aiplatform>=1.50.0
 google-cloud-firestore>=2.11.0
 google-cloud-storage>=2.8.0
 google-cloud-tasks>=2.13.0
-gevent>=23.9.1
-nest-asyncio>=1.6.0
+requests>=2.31.0
+google-auth>=2.29.0
