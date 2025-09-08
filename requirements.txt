@@ -1,10 +1,12 @@
 Flask>=3.0.0
 gunicorn>=21.2.0
 PyPDF>=4.0.0
-langchain-core>=0.1.50
-langchain-text-splitters>=0.0.1
-langchain-google-firestore>=0.1.2
-langchain-google-vertexai>=1.0.3
+# --- LIBRERÍAS LANGCHAIN ACTUALIZADAS A LAS ÚLTIMAS VERSIONES ---
+langchain-core==0.3.75
+langchain-text-splitters==0.3.11
+langchain-google-firestore==0.5.0
+langchain-google-vertexai==2.0.28
+# --- FIN DE LIBRERÍAS ACTUALIZADAS ---
 google-cloud-aiplatform>=1.50.0
 google-cloud-firestore>=2.11.0
 google-cloud-storage>=2.8.0
