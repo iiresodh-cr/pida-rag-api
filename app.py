@@ -12,6 +12,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
 from langchain_google_vertexai import VertexAIEmbeddings, ChatVertexAI
 from google.cloud import firestore, storage
+# --- IMPORTACIÓN AÑADIDA PARA LA CORRECCIÓN ---
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 # --- Creación de la Aplicación Flask ---
 app = Flask(__name__)
@@ -47,7 +49,7 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# FUNCIÓN DE PROCESamiento DE PDF (MODIFICADA CON BATCHING Y METADATOS)
+# FUNCIÓN DE PROCESamiento DE PDF (CORREGIDA)
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
@@ -63,16 +65,16 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         if not firestore_client or not embedding_model:
             raise Exception("Los clientes de Firestore o Embedding no se inicializaron correctamente.")
         
-        # --- MEJORA DE IDEMPOTENCIA ---
+        # --- MEJORA DE IDEMPOTENCIA (SINTAXIS CORREGIDA) ---
         COLLECTION_NAME = "pdf_embeded_documents"
         docs_ref = firestore_client.collection(COLLECTION_NAME)
-        # Busca si ya existe un documento con el 'source' (nombre del archivo)
-        existing_docs_query = docs_ref.where("metadata.source", "==", filename).limit(1).stream()
+        # Se utiliza la sintaxis moderna con FieldFilter para la consulta.
+        existing_docs_query = docs_ref.where(filter=FieldFilter("metadata.source", "==", filename)).limit(1).stream()
         
         if len(list(existing_docs_query)) > 0:
             print(f"El archivo '{filename}' ya ha sido procesado anteriormente. Saltando...")
             return {"status": "skipped", "message": f"El archivo {filename} ya existe en la base de datos."}
-        # --- FIN DE LA MEJORA ---
+        # --- FIN DE LA CORRECCIÓN ---
 
         print(f"Paso 1/4: Leyendo contenido y metadatos del PDF '{filename}'...")
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -80,18 +82,11 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         if not text_content:
             return {"status": "error", "reason": "No se pudo extraer texto del PDF."}
 
-        # --- MEJORA: EXTRACCIÓN DE METADATOS DEL PDF ---
-        # Accedemos a los metadatos del documento.
         pdf_meta = reader.metadata
-        
-        # Obtenemos el título de los metadatos. Si no existe, usamos el nombre del archivo como fallback.
         book_title = pdf_meta.title if pdf_meta.title else os.path.splitext(filename)[0].replace("_", " ").title()
-        
-        # Obtenemos el autor de los metadatos. Si no existe, lo dejamos como 'Desconocido'.
         book_author = pdf_meta.author if pdf_meta.author else "Autor Desconocido"
         
         print(f"Metadatos extraídos -> Título: '{book_title}', Autor: '{book_author}'")
-        # --- FIN DE LA MEJORA ---
 
         print("Paso 2/4: Dividiendo el texto en fragmentos...")
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
@@ -100,8 +95,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         print(f"Paso 3/4: Creando {len(chunks)} objetos Document enriquecidos...")
         documents = []
         for i, chunk in enumerate(chunks):
-            # --- MEJORA: ENRIQUECIMIENTO DEL CONTENIDO Y METADATOS ---
-            # Se añade el autor a los metadatos del documento.
             enriched_content = f"Título del documento: {book_title}. Contenido: {chunk}"
             doc = Document(
                 page_content=enriched_content,
@@ -109,12 +102,11 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
                     "source": filename, 
                     "chunk_index": i, 
                     "title": book_title,
-                    "author": book_author # <-- Nuevo metadato
+                    "author": book_author
                 }
             )
             documents.append(doc)
         
-        # --- PROCESAMIENTO POR LOTES ---
         vector_store = FirestoreVectorStore(
             collection=COLLECTION_NAME,
             embedding_service=embedding_model,
@@ -142,7 +134,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
 # ==============================================================================
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
-    # ... (código interno de la función sin cambios) ...
     try:
         clients = get_clients()
         storage_client = clients.get('storage')
