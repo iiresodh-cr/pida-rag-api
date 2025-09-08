@@ -8,7 +8,7 @@ WORKDIR /app
 
 # Copia solo el archivo de requerimientos primero para aprovechar el caché.
 COPY requirements.txt .
-# Instala las dependencias.
+# Instala las dependencias, incluyendo gunicorn para producción.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Ahora, copia todo el código de tu aplicación.
@@ -17,6 +17,6 @@ COPY . .
 # Expone el puerto 8080, el estándar para Cloud Run.
 EXPOSE 8080
 
-# --- COMANDO FINAL Y DEFINITIVO ---
-# Usa el worker 'gevent' que es compatible con el parche de asyncio.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--worker-class", "gevent", "--timeout", "0", "app:app"]
+# El comando para iniciar la aplicación usando el servidor Gunicorn.
+# --timeout 0 permite que Cloud Run gestione los tiempos de espera de las solicitudes.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--timeout", "0", "app:app"]
