@@ -18,5 +18,5 @@ COPY . .
 EXPOSE 8080
 
 # --- COMANDO FINAL Y DEFINITIVO ---
-# Volvemos al worker estándar.
+# Volvemos al worker estándar y confiable.
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--timeout", "0", "app:app"]
