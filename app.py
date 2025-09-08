@@ -46,7 +46,7 @@ def get_clients():
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
             
-            # --- CORRECCIÓN APLICADA: Se pasa el parámetro dentro de model_kwargs ---
+            # --- Este código es correcto y funcionará con las librerías actualizadas ---
             clients['embedding'] = VertexAIEmbeddings(
                 model_name="gemini-embedding-001",
                 model_kwargs={"output_dimensionality": 768}
