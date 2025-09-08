@@ -29,7 +29,7 @@ def get_clients():
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
             VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
-            MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
             print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
             
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
@@ -47,12 +47,12 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# FUNCIÓN DE PROCESamiento DE PDF (MODIFICADA CON BATCHING)
+# FUNCIÓN DE PROCESamiento DE PDF (MODIFICADA CON BATCHING Y METADATOS)
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore
-    en lotes para no superar los límites de la base de datos.
+    Procesa el contenido de un PDF, extrae sus metadatos, lo divide, 
+    crea embeddings y lo guarda en Firestore en lotes.
     """
     try:
         print(f"Iniciando procesamiento para el archivo: {filename}")
@@ -62,45 +62,71 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
 
         if not firestore_client or not embedding_model:
             raise Exception("Los clientes de Firestore o Embedding no se inicializaron correctamente.")
+        
+        # --- MEJORA DE IDEMPOTENCIA ---
+        COLLECTION_NAME = "pdf_embeded_documents"
+        docs_ref = firestore_client.collection(COLLECTION_NAME)
+        # Busca si ya existe un documento con el 'source' (nombre del archivo)
+        existing_docs_query = docs_ref.where("metadata.source", "==", filename).limit(1).stream()
+        
+        if len(list(existing_docs_query)) > 0:
+            print(f"El archivo '{filename}' ya ha sido procesado anteriormente. Saltando...")
+            return {"status": "skipped", "message": f"El archivo {filename} ya existe en la base de datos."}
+        # --- FIN DE LA MEJORA ---
 
-        print(f"Paso 1/4: Leyendo contenido del PDF '{filename}'...")
+        print(f"Paso 1/4: Leyendo contenido y metadatos del PDF '{filename}'...")
         reader = PdfReader(io.BytesIO(file_bytes))
         text_content = "".join(page.extract_text() for page in reader.pages if page.extract_text())
         if not text_content:
             return {"status": "error", "reason": "No se pudo extraer texto del PDF."}
 
+        # --- MEJORA: EXTRACCIÓN DE METADATOS DEL PDF ---
+        # Accedemos a los metadatos del documento.
+        pdf_meta = reader.metadata
+        
+        # Obtenemos el título de los metadatos. Si no existe, usamos el nombre del archivo como fallback.
+        book_title = pdf_meta.title if pdf_meta.title else os.path.splitext(filename)[0].replace("_", " ").title()
+        
+        # Obtenemos el autor de los metadatos. Si no existe, lo dejamos como 'Desconocido'.
+        book_author = pdf_meta.author if pdf_meta.author else "Autor Desconocido"
+        
+        print(f"Metadatos extraídos -> Título: '{book_title}', Autor: '{book_author}'")
+        # --- FIN DE LA MEJORA ---
+
         print("Paso 2/4: Dividiendo el texto en fragmentos...")
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
         chunks = text_splitter.split_text(text_content)
         
-        book_title = os.path.splitext(filename)[0].replace("_", " ").title()
-        print(f"Título extraído para metadatos: '{book_title}'")
-        
         print(f"Paso 3/4: Creando {len(chunks)} objetos Document enriquecidos...")
         documents = []
         for i, chunk in enumerate(chunks):
+            # --- MEJORA: ENRIQUECIMIENTO DEL CONTENIDO Y METADATOS ---
+            # Se añade el autor a los metadatos del documento.
             enriched_content = f"Título del documento: {book_title}. Contenido: {chunk}"
             doc = Document(
                 page_content=enriched_content,
-                metadata={"source": filename, "chunk_index": i, "title": book_title}
+                metadata={
+                    "source": filename, 
+                    "chunk_index": i, 
+                    "title": book_title,
+                    "author": book_author # <-- Nuevo metadato
+                }
             )
             documents.append(doc)
         
-        # --- MODIFICACIÓN CLAVE DE PROCESAMIENTO POR LOTES ---
-        COLLECTION_NAME = "pdf_embeded_documents"
+        # --- PROCESAMIENTO POR LOTES ---
         vector_store = FirestoreVectorStore(
             collection=COLLECTION_NAME,
             embedding_service=embedding_model,
             client=firestore_client,
         )
 
-        batch_size = 100 # Un tamaño de lote seguro, muy por debajo del límite de 500
+        batch_size = 100 
         print(f"Paso 4/4: Guardando {len(documents)} documentos en Firestore en lotes de {batch_size}...")
 
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i + batch_size]
             print(f"  -> Guardando lote {int(i/batch_size) + 1} de {int(len(documents)/batch_size) + 1}...")
-            # Aquí se generan los embeddings para el lote y se guardan
             vector_store.add_documents(batch)
         
         print(f"Procesamiento completado con éxito para: {filename}")
