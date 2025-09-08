@@ -11,7 +11,7 @@ import vertexai
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
-# --- CAMBIO DE LIBRERÍA: Se importa la nueva clase de Embeddings y Chat ---
+# --- CORRECCIÓN: Se elimina la importación de la librería antigua ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from google.cloud import firestore, storage, tasks_v2
 
@@ -43,14 +43,13 @@ def get_clients():
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
 
-            # --- SOLUCIÓN: Se usa la nueva clase GoogleGenerativeAIEmbeddings ---
-            # Esta clase acepta el parámetro 'output_dimensionality' directamente.
+            # Se usa la nueva clase GoogleGenerativeAIEmbeddings
             clients['embedding'] = GoogleGenerativeAIEmbeddings(
                 model="models/embedding-001",
                 output_dimensionality=768
             )
 
-            # También usamos la clase de chat correspondiente de la nueva librería.
+            # Se usa la clase de chat correspondiente de la nueva librería
             clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
 
             clients['tasks'] = tasks_v2.CloudTasksClient()
