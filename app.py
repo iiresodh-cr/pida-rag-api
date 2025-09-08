@@ -35,26 +35,24 @@ def get_clients():
             MODEL_NAME = env.get("GEMINI_MODEL", "gemini-2.5-flash")
             print(f"--- Usando el modelo Gemini: {MODEL_NAME} ---")
 
-            TASK_QUEUE_ID = env.get("TASK_QUEUE_ID") 
+            TASK_QUEUE_ID = env.get("TASK_QUEUE_ID")
             CLOUD_RUN_URL = env.get("CLOUD_RUN_URL")
-            
-            # La inicialización de vertexai ya no es necesaria para estas librerías,
-            # pero la dejamos por si se usan otros servicios de Vertex AI.
+
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
 
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
-            
+
             # --- SOLUCIÓN: Se usa la nueva clase GoogleGenerativeAIEmbeddings ---
             # Esta clase acepta el parámetro 'output_dimensionality' directamente.
             clients['embedding'] = GoogleGenerativeAIEmbeddings(
-                model="models/embedding-001", 
+                model="models/embedding-001",
                 output_dimensionality=768
             )
-            
+
             # También usamos la clase de chat correspondiente de la nueva librería.
             clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
-            
+
             clients['tasks'] = tasks_v2.CloudTasksClient()
 
             clients['config'] = {
@@ -63,7 +61,7 @@ def get_clients():
                 "queue_id": TASK_QUEUE_ID,
                 "run_url": CLOUD_RUN_URL
             }
-            
+
             print("--- Clientes de Google Cloud inicializados correctamente con 'langchain-google-genai'. ---")
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
@@ -90,7 +88,7 @@ def gcs_event_receiver():
             return "Evento no válido", 204
 
         payload = {"bucket": event["bucket"], "filename": event["name"]}
-        
+
         task = {
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
@@ -102,7 +100,7 @@ def gcs_event_receiver():
 
         parent = tasks_client.queue_path(config['project_id'], config['location'], config['queue_id'])
         tasks_client.create_task(parent=parent, task=task)
-        
+
         print(f"Tarea creada para el archivo: {event['name']}")
         return "Tarea creada con éxito", 200
 
@@ -131,12 +129,12 @@ def pdf_processing_worker():
 
         bucket_name = task_payload.get("bucket")
         file_id = task_payload.get("filename")
-        
+
         print(f"Trabajador iniciando procesamiento para: {file_id}")
 
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
-        
+
         if not blob.exists():
             print(f"El archivo {file_id} no se encontró en el bucket {bucket_name}.")
             return "Archivo no encontrado", 204
@@ -180,12 +178,12 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         print("Paso 2/4: Dividiendo el texto en fragmentos...")
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
         chunks = text_splitter.split_text(text_content)
-        
+
         book_title = os.path.splitext(filename)[0].replace("_", " ").title()
-        
+
         print(f"Paso 3/4: Creando {len(chunks)} objetos Document enriquecidos...")
         documents = [Document(page_content=f"Título del documento: {book_title}. Contenido: {chunk}", metadata={"source": filename, "chunk_index": i, "title": book_title}) for i, chunk in enumerate(chunks)]
-        
+
         COLLECTION_NAME = "pdf_embeded_documents"
         vector_store = FirestoreVectorStore(
             collection=COLLECTION_NAME,
@@ -193,14 +191,14 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
             client=firestore_client,
         )
 
-        batch_size = 100 
+        batch_size = 100
         print(f"Paso 4/4: Guardando {len(documents)} documentos en Firestore en lotes de {batch_size}...")
 
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i + batch_size]
             print(f"  -> Guardando lote {int(i/batch_size) + 1} de {int(len(documents)/batch_size) + 1}...")
             vector_store.add_documents(batch)
-        
+
         print(f"Procesamiento completado con éxito para: {filename}")
         return {"status": "ok", "message": f"Archivo {filename} procesado."}
 
@@ -218,7 +216,7 @@ def query_rag_handler():
         request_data = request.get_json()
         if not request_data or "query" not in request_data:
             return jsonify({"error": "Petición inválida. Se requiere 'query'."}), 400
-        
+
         user_query = request_data["query"]
 
         clients = get_clients()
@@ -234,11 +232,11 @@ def query_rag_handler():
             embedding_service=embedding_model,
             client=firestore_client,
         )
-        
+
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
         results = [{"source": doc.metadata.get("source", "N/A"), "content": doc.page_content} for doc in found_docs]
-        
+
         return jsonify({"results": results}), 200
 
     except Exception as e:
