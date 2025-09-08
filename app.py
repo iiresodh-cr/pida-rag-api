@@ -1,3 +1,8 @@
+# --- PARCHE PARA ASYNCIO (Debe estar al principio de todo) ---
+import nest_asyncio
+nest_asyncio.apply()
+# --- FIN DEL PARCHE ---
+
 import os
 import io
 import json
@@ -11,7 +16,6 @@ import vertexai
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
-# --- CORRECCIÓN: Se elimina la importación de la librería antigua ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from google.cloud import firestore, storage, tasks_v2
 
@@ -43,13 +47,11 @@ def get_clients():
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
 
-            # Se usa la nueva clase GoogleGenerativeAIEmbeddings
             clients['embedding'] = GoogleGenerativeAIEmbeddings(
                 model="models/embedding-001",
                 output_dimensionality=768
             )
 
-            # Se usa la clase de chat correspondiente de la nueva librería
             clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
 
             clients['tasks'] = tasks_v2.CloudTasksClient()
@@ -61,7 +63,7 @@ def get_clients():
                 "run_url": CLOUD_RUN_URL
             }
 
-            print("--- Clientes de Google Cloud inicializados correctamente con 'langchain-google-genai'. ---")
+            print("--- Clientes de Google Cloud inicializados correctamente. ---")
         except Exception as e:
             print(f"--- !!! ERROR CRÍTICO durante la inicialización de clientes: {e} ---")
             traceback.print_exc()
