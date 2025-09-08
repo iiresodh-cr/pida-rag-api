@@ -1,12 +1,9 @@
-# --- PARCHE PARA ASYNCIO (Debe estar al principio de todo) ---
-import nest_asyncio
-nest_asyncio.apply()
-# --- FIN DEL PARCHE ---
-
 import os
 import io
 import json
 import traceback
+import requests
+import google.auth
 from flask import Flask, request, jsonify
 from pypdf import PdfReader
 from typing import Dict, Any
@@ -41,26 +38,25 @@ def get_clients():
 
             TASK_QUEUE_ID = env.get("TASK_QUEUE_ID")
             CLOUD_RUN_URL = env.get("CLOUD_RUN_URL")
-
+            
+            # Obtenemos la cuenta de servicio para la autenticación de la tarea
+            _, project = google.auth.default()
+            credentials = google.auth.impersonated_credentials.IDTokenCredentials.from_default_credentials()
+            
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
 
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
-
-            clients['embedding'] = GoogleGenerativeAIEmbeddings(
-                model="models/embedding-001",
-                output_dimensionality=768
-            )
-
+            clients['embedding'] = GoogleGenerativeAIEmbeddings(model="models/embedding-001", output_dimensionality=768)
             clients['llm'] = ChatGoogleGenerativeAI(model=MODEL_NAME)
-
-            clients['tasks'] = tasks_v2.CloudTasksClient()
-
+            
+            # Ya no necesitamos el cliente de tasks, guardamos la configuración para la petición HTTP
             clients['config'] = {
                 "project_id": PROJECT_ID,
                 "location": VERTEX_AI_LOCATION,
                 "queue_id": TASK_QUEUE_ID,
-                "run_url": CLOUD_RUN_URL
+                "run_url": CLOUD_RUN_URL,
+                "credentials": credentials,
             }
 
             print("--- Clientes de Google Cloud inicializados correctamente. ---")
@@ -71,38 +67,57 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# ENDPOINT 1: RECEPTOR DE GCS Y CREADOR DE TAREAS
+# ENDPOINT 1: RECEPTOR DE GCS Y CREADOR DE TAREAS (VERSIÓN HTTP SIMPLIFICADA)
 # ==============================================================================
 @app.route("/", methods=["POST"])
 def gcs_event_receiver():
     """
-    Recibe la notificación de GCS, crea una tarea en Cloud Tasks y responde OK inmediatamente.
+    Recibe la notificación de GCS, crea una tarea en Cloud Tasks vía HTTP y responde OK.
     """
     try:
-        clients = get_clients()
-        tasks_client = clients.get('tasks')
-        config = clients.get('config')
+        clients_data = get_clients()
+        config = clients_data.get('config')
 
         event = request.get_json(silent=True)
         if not event or "bucket" not in event or "name" not in event:
-            print("Petición ignorada: evento no válido.")
             return "Evento no válido", 204
 
-        payload = {"bucket": event["bucket"], "filename": event["name"]}
-
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": f"{config['run_url']}/process-task",
-                "headers": {"Content-type": "application/json"},
-                "body": json.dumps(payload).encode(),
+        # 1. Construir la URL de la API de Cloud Tasks
+        tasks_api_url = f"https://cloudtasks.googleapis.com/v2/projects/{config['project_id']}/locations/{config['location']}/queues/{config['queue_id']}/tasks"
+        
+        # 2. Construir el cuerpo (payload) de la tarea
+        worker_url = f"{config['run_url']}/process-task"
+        task_payload = {"bucket": event["bucket"], "filename": event["name"]}
+        
+        task_body = {
+            "task": {
+                "http_request": {
+                    "url": worker_url,
+                    "http_method": "POST",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps(task_payload).encode('utf-8').hex(), # Body en hexadecimal
+                    "oidc_token": {
+                        "service_account_email": config['credentials'].service_account_email
+                    }
+                }
             }
         }
 
-        parent = tasks_client.queue_path(config['project_id'], config['location'], config['queue_id'])
-        tasks_client.create_task(parent=parent, task=task)
+        # 3. Obtener un token de autenticación para la API
+        auth_req = google.auth.transport.requests.Request()
+        config['credentials'].refresh(auth_req)
+        auth_token = config['credentials'].token
 
-        print(f"Tarea creada para el archivo: {event['name']}")
+        # 4. Enviar la petición para crear la tarea
+        headers = {
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(tasks_api_url, json=task_body, headers=headers)
+        response.raise_for_status() # Lanza un error si la petición falla
+
+        print(f"Tarea creada vía HTTP para el archivo: {event['name']}")
         return "Tarea creada con éxito", 200
 
     except Exception as e:
@@ -111,13 +126,10 @@ def gcs_event_receiver():
         return "Error al crear la tarea, pero evento aceptado.", 200
 
 # ==============================================================================
-# ENDPOINT 2: TRABAJADOR DE PROCESAMIENTO DE PDF
+# El resto del archivo (ENDPOINT 2 y la función de procesamiento) no necesita cambios.
 # ==============================================================================
 @app.route("/process-task", methods=["POST"])
 def pdf_processing_worker():
-    """
-    Este endpoint es llamado por Cloud Tasks para hacer el trabajo pesado.
-    """
     try:
         clients = get_clients()
         storage_client = clients.get('storage')
@@ -135,7 +147,7 @@ def pdf_processing_worker():
 
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_id)
-
+        
         if not blob.exists():
             print(f"El archivo {file_id} no se encontró en el bucket {bucket_name}.")
             return "Archivo no encontrado", 204
@@ -154,13 +166,7 @@ def pdf_processing_worker():
         traceback.print_exc()
         return f"Error inesperado en el trabajador: {str(e)}", 500
 
-# ==============================================================================
-# FUNCIÓN DE PROCESAMIENTO DE PDF
-# ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
-    """
-    Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore.
-    """
     try:
         print(f"Iniciando procesamiento para el archivo: {filename}")
         clients = get_clients()
@@ -208,9 +214,6 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         traceback.print_exc()
         return {"status": "error", "reason": str(e)}
 
-# ==============================================================================
-# ENDPOINT DE CONSULTA RAG
-# ==============================================================================
 @app.route("/query", methods=["POST"])
 def query_rag_handler():
     try:
@@ -237,7 +240,7 @@ def query_rag_handler():
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
         results = [{"source": doc.metadata.get("source", "N/A"), "content": doc.page_content} for doc in found_docs]
-
+        
         return jsonify({"results": results}), 200
 
     except Exception as e:
