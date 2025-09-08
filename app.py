@@ -46,10 +46,10 @@ def get_clients():
             clients['firestore'] = firestore.Client()
             clients['storage'] = storage.Client()
             
-            # --- MEJORA APLICADA: Se usa el nuevo modelo con dimensionalidad optimizada ---
+            # --- CORRECCIÓN APLICADA: Se pasa el parámetro dentro de model_kwargs ---
             clients['embedding'] = VertexAIEmbeddings(
                 model_name="gemini-embedding-001",
-                output_dimensionality=768
+                model_kwargs={"output_dimensionality": 768}
             )
             clients['llm'] = ChatVertexAI(model_name=MODEL_NAME) 
             
