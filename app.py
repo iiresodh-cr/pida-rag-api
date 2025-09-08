@@ -1,3 +1,8 @@
+# --- PARCHE PARA ASYNCIO (Debe estar al principio de todo) ---
+import nest_asyncio
+nest_asyncio.apply()
+# --- FIN DEL PARCHE ---
+
 import os
 import io
 import json
@@ -97,7 +102,7 @@ def handle_gcs_event():
         return f"Error inesperado: {str(e)}", 500
 
 # ==============================================================================
-# FUNCIÓN DE PROCESAMIENTO DE PDF (SIN CAMBIOS)
+# FUNCIÓN DE PROCESAMIENTO DE PDF
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
@@ -151,7 +156,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         return {"status": "error", "reason": str(e)}
 
 # ==============================================================================
-# ENDPOINT DE CONSULTA RAG (SIN CAMBIOS)
+# ENDPOINT DE CONSULTA RAG
 # ==============================================================================
 @app.route("/query", methods=["POST"])
 def query_rag_handler():
