@@ -192,6 +192,8 @@ def query_rag_handler():
             {
                 "source": doc.metadata.get("source", "N/A"),
                 "content": doc.page_content,
+                "title": doc.metadata.get("title", "Título no disponible"),
+                "author": doc.metadata.get("author", "") # Devuelve "" si no hay autor
             }
             for doc in found_docs
         ]
