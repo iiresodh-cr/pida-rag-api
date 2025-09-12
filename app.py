@@ -150,7 +150,6 @@ def query_rag_handler():
             results.append(result_item)
         
         return jsonify({"results": results}), 200
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": f"Error inesperado: {str(e)}"}), 500
