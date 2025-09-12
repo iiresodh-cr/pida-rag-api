@@ -95,9 +95,8 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         print(f"Paso 3/4: Creando {len(chunks)} objetos Document enriquecidos...")
         documents = []
         for i, chunk in enumerate(chunks):
-            enriched_content = f"Título del documento: {book_title}. Contenido: {chunk}"
             doc = Document(
-                page_content=enriched_content,
+                page_content=chunk,
                 metadata={
                     "source": filename, 
                     "chunk_index": i, 
