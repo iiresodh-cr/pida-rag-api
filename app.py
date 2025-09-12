@@ -40,6 +40,7 @@ def get_clients():
 
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     try:
+        # ... (Esta función ya es correcta, no necesita cambios) ...
         print(f"Iniciando procesamiento para el archivo: {filename}")
         clients = get_clients()
         firestore_client = clients.get('firestore')
@@ -71,12 +72,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         for i, chunk in enumerate(chunks):
             doc = Document(
                 page_content=chunk,
-                metadata={
-                    "source": filename, 
-                    "chunk_index": i, 
-                    "title": book_title,
-                    "author": book_author
-                }
+                metadata={ "source": filename, "chunk_index": i, "title": book_title, "author": book_author }
             )
             documents.append(doc)
         
@@ -97,6 +93,7 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
     try:
+        # ... (Esta función ya es correcta, no necesita cambios) ...
         clients = get_clients()
         storage_client = clients.get('storage')
         if not storage_client:
@@ -138,18 +135,21 @@ def query_rag_handler():
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
         results = []
-        for i, doc in enumerate(found_docs):
-            print(f"DEBUG RAG API - Doc {i} METADATA: {doc.metadata}")
+        for doc in found_docs:
+            # --- LA CORRECCIÓN FINAL ---
+            # Accedemos al diccionario de metadatos anidado
+            user_metadata = doc.metadata.get("metadata", {})
             
             result_item = {
-                "source": doc.metadata.get("source"),
+                "source": user_metadata.get("source"),
                 "content": doc.page_content,
-                "title": doc.metadata.get("title"),
-                "author": doc.metadata.get("author")
+                "title": user_metadata.get("title"),
+                "author": user_metadata.get("author")
             }
             results.append(result_item)
         
         return jsonify({"results": results}), 200
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": f"Error inesperado: {str(e)}"}), 500
