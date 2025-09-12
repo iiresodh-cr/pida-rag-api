@@ -12,7 +12,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_firestore import FirestoreVectorStore
 from langchain_google_vertexai import VertexAIEmbeddings, ChatVertexAI
 from google.cloud import firestore, storage
-# --- IMPORTACIÓN AÑADIDA PARA LA CORRECCIÓN ---
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 # --- Creación de la Aplicación Flask ---
@@ -49,12 +48,11 @@ def get_clients():
     return clients
 
 # ==============================================================================
-# FUNCIÓN DE PROCESamiento DE PDF (CORREGIDA)
+# FUNCIÓN DE PROCESAMIENTO DE PDF
 # ==============================================================================
 def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Procesa el contenido de un PDF, extrae sus metadatos, lo divide, 
-    crea embeddings y lo guarda en Firestore en lotes.
+    Procesa el contenido de un PDF, lo divide, crea embeddings y lo guarda en Firestore.
     """
     try:
         print(f"Iniciando procesamiento para el archivo: {filename}")
@@ -65,16 +63,13 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         if not firestore_client or not embedding_model:
             raise Exception("Los clientes de Firestore o Embedding no se inicializaron correctamente.")
         
-        # --- MEJORA DE IDEMPOTENCIA (SINTAXIS CORREGIDA) ---
         COLLECTION_NAME = "pdf_embeded_documents"
         docs_ref = firestore_client.collection(COLLECTION_NAME)
-        # Se utiliza la sintaxis moderna con FieldFilter para la consulta.
         existing_docs_query = docs_ref.where(filter=FieldFilter("metadata.source", "==", filename)).limit(1).stream()
         
         if len(list(existing_docs_query)) > 0:
             print(f"El archivo '{filename}' ya ha sido procesado anteriormente. Saltando...")
             return {"status": "skipped", "message": f"El archivo {filename} ya existe en la base de datos."}
-        # --- FIN DE LA CORRECCIÓN ---
 
         print(f"Paso 1/4: Leyendo contenido y metadatos del PDF '{filename}'...")
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -92,11 +87,11 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
         chunks = text_splitter.split_text(text_content)
         
-        print(f"Paso 3/4: Creando {len(chunks)} objetos Document enriquecidos...")
+        print(f"Paso 3/4: Creando {len(chunks)} objetos Document...")
         documents = []
         for i, chunk in enumerate(chunks):
             doc = Document(
-                page_content=chunk,
+                page_content=chunk,  # Guardar solo el texto limpio
                 metadata={
                     "source": filename, 
                     "chunk_index": i, 
@@ -160,7 +155,7 @@ def handle_gcs_event():
         return f"Error inesperado: {str(e)}", 500
 
 # ==============================================================================
-# ENDPOINT DE CONSULTA RAG
+# ENDPOINT DE CONSULTA RAG (VERSIÓN CORREGIDA FINAL)
 # ==============================================================================
 @app.route("/query", methods=["POST"])
 def query_rag_handler():
@@ -187,12 +182,13 @@ def query_rag_handler():
 
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
+        # --- LÓGICA CORREGIDA PARA DEVOLVER TODOS LOS METADATOS ---
         results = [
             {
-                "source": doc.metadata.get("source"),  # Devuelve el nombre del archivo
+                "source": doc.metadata.get("source"),
                 "content": doc.page_content,
-                "title": doc.metadata.get("title"),    # Devuelve el título o None
-                "author": doc.metadata.get("author")   # Devuelve el autor o None
+                "title": doc.metadata.get("title"),
+                "author": doc.metadata.get("author")
             }
             for doc in found_docs
         ]
