@@ -190,10 +190,10 @@ def query_rag_handler():
 
         results = [
             {
-                "source": doc.metadata.get("source", "N/A"),
+                "source": doc.metadata.get("source"),  # Devuelve el nombre del archivo
                 "content": doc.page_content,
-                "title": doc.metadata.get("title", "Título no disponible"),
-                "author": doc.metadata.get("author", "") # Devuelve "" si no hay autor
+                "title": doc.metadata.get("title"),    # Devuelve el título o None
+                "author": doc.metadata.get("author")   # Devuelve el autor o None
             }
             for doc in found_docs
         ]
