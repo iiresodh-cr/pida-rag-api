@@ -24,7 +24,7 @@ def get_clients():
         try:
             PROJECT_ID = os.environ.get("PROJECT_ID")
             VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION")
-            MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+            MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
             
             vertexai.init(project=PROJECT_ID, location=VERTEX_AI_LOCATION)
             clients['firestore'] = firestore.Client()
@@ -97,7 +97,28 @@ def _process_and_embed_pdf_content(file_bytes: bytes, filename: str) -> Dict[str
 @app.route("/", methods=["POST"])
 def handle_gcs_event():
     try:
-        # ... (código sin cambios)
+        clients = get_clients()
+        storage_client = clients.get('storage')
+        if not storage_client:
+            return "Error interno del servidor", 500
+        event = request.get_json(silent=True)
+        if not event:
+            return "Petición ignorada", 204
+        bucket_name = event.get("bucket")
+        file_id = event.get("name")
+        if not bucket_name or not file_id:
+            return "Evento no válido", 204
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_id)
+        if not blob.exists():
+            return "Archivo no encontrado para procesar", 204
+        file_bytes = blob.download_as_bytes()
+        result = _process_and_embed_pdf_content(file_bytes, file_id)
+        if result.get("status") == "ok":
+            return "Procesado con éxito", 200
+        else:
+            reason = result.get("reason", "Razón desconocida")
+            return f"Fallo en el procesamiento: {reason}", 200
     except Exception as e:
         return f"Error inesperado: {str(e)}", 500
 
@@ -117,9 +138,7 @@ def query_rag_handler():
         found_docs = vector_store.similarity_search(query=user_query, k=4)
 
         results = []
-        # --- BUCLE DE DEPURACIÓN ---
         for i, doc in enumerate(found_docs):
-            # Esta línea imprimirá en los logs de 'pida-rag-api' el diccionario de metadatos exacto.
             print(f"DEBUG RAG API - Doc {i} METADATA: {doc.metadata}")
             
             result_item = {
